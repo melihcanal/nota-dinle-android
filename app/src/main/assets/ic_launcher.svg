@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
-  <title>NotaDinle minimal music note icon</title>
+  <title>NotaDinle app icon</title>
   <rect width="108" height="108" rx="24" fill="#18483B"/>
-  <path d="M63 69V28" fill="none" stroke="#F7F6F0" stroke-width="6" stroke-linecap="round"/>
-  <path d="M38 76c0-6 7-12 16-14 9-2 16 1 17 6s-6 11-15 13c-9 2-17 0-18-5z" fill="#D98B45"/>
+  <path d="M66.2 66V27" fill="none" stroke="#F7F6F0" stroke-width="6" stroke-linecap="round"/>
+  <path d="M65.7 66.08c1.87 4.01-2.3 9.9-9.32 13.17-7.01 3.27-14.2 2.67-16.07-1.33-1.87-4.01 2.3-9.9 9.31-13.17 7.01-3.27 14.2-2.67 16.08 1.33z" fill="#D98B45"/>
 </svg>

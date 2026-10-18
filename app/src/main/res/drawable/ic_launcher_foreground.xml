@@ -1,4 +1,4 @@
-<!-- Minimal note glyph from app/src/main/assets/ic_launcher.svg; background is ic_launcher_background. -->
+<!-- Clean note glyph mirrored from app/src/main/assets/ic_launcher.svg. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
@@ -6,11 +6,11 @@
     android:viewportHeight="108">
     <path
         android:fillColor="@android:color/transparent"
-        android:pathData="M63,69V28"
+        android:pathData="M66.2,66V27"
         android:strokeColor="#F7F6F0"
         android:strokeWidth="6"
         android:strokeLineCap="round" />
     <path
         android:fillColor="#D98B45"
-        android:pathData="M38,76c0,-6 7,-12 16,-14 9,-2 16,1 17,6s-6,11 -15,13c-9,2 -17,0 -18,-5z" />
+        android:pathData="M65.7,66.08c1.87,4.01 -2.3,9.9 -9.32,13.17 -7.01,3.27 -14.2,2.67 -16.07,-1.33 -1.87,-4.01 2.3,-9.9 9.31,-13.17 7.01,-3.27 14.2,-2.67 16.08,1.33z" />
 </vector>
