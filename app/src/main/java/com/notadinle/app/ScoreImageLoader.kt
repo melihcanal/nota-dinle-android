@@ -4,10 +4,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import android.media.ExifInterface
+import androidx.exifinterface.media.ExifInterface
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import kotlin.math.roundToInt
+import androidx.core.graphics.createBitmap
 
 internal object ScoreImageLoader {
     private const val MAX_IMAGE_SIDE = 1800
@@ -69,7 +70,7 @@ internal object ScoreImageLoader {
                     val scale = minOf(1.0, MAX_IMAGE_SIDE.toDouble() / maxOf(page.width, page.height))
                     val width = (page.width * scale).roundToInt().coerceAtLeast(1)
                     val height = (page.height * scale).roundToInt().coerceAtLeast(1)
-                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val bitmap = createBitmap(width, height)
                     bitmap.eraseColor(android.graphics.Color.WHITE)
                     page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                     return bitmap

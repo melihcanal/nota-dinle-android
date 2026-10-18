@@ -13,7 +13,7 @@ Basılı nota sayfası fotoğrafını veya bir PDF/görsel dosyasını cihaz üz
 
 ## Nota tanımanın kapsamı
 
-Bu ilk sürüm temiz, yatay, tek sol anahtarı portesi ve tek sesli melodiler için tasarlanmıştır. Nota başlarının porte üzerindeki yüksekliğinden doğal sesleri (C–B) tanır. Ritim şimdilik eşit dörtlük kabul edilir. Diyez/bemol ve donanım, sus işaretleri, akorlar, birden fazla porte, el yazısı ve eğik/perspektifli sayfalar henüz desteklenmiyor. Tanınan her notayı çalmadan önce ekranda kontrol edip yarım ses düzeltmesi yapabilirsin.
+Bu ilk sürüm temiz ve yatay bir sayfadaki birden fazla sol anahtarı portesini ve tek sesli melodileri okuyabilir. Nota adları porte üstünde metin olarak yazıyorsa bu alanı nota algılamasına katmaz; porte başındaki sol anahtarı ve ölçü işaretlerini de nota olarak okumamaya çalışır. Nota başlarının yüksekliğinden doğal sesleri (C–B) tanır. Ritim şimdilik eşit dörtlük kabul edilir ve en fazla 200 nota okunur. Diyez/bemol ve donanım, sus işaretleri, akorlar, el yazısı ve eğik/perspektifli sayfalar henüz desteklenmiyor. Tanınan her notayı çalmadan önce ekranda kontrol edip yarım ses düzeltmesi yapabilirsin.
 
 Nota görüntüsü sunucuya gönderilmez; tanıma cihazda yapılır.
 
