@@ -1,10 +1,15 @@
 package com.notadinle.app
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-internal class NoteRecognitionException(message: String) : Exception(message)
+internal open class NoteRecognitionException(message: String) : Exception(message)
+private class StaffLayoutException(message: String) : NoteRecognitionException(message)
 
 internal object StaffNoteRecognizer {
     private data class StaffLine(val y: Double, val strength: Double, val thickness: Int)
@@ -12,17 +17,29 @@ internal object StaffNoteRecognizer {
     private data class NoteHead(val x: Double, val step: Int, val score: Double)
 
     fun recognize(bitmap: Bitmap): List<DetectedNote> {
+        var lastLayoutError: StaffLayoutException? = null
+        for (angle in STAFF_SCAN_ANGLES) {
+            val scanBitmap = if (angle == 0f) bitmap else rotateForScan(bitmap, angle)
+            try {
+                return recognizeHorizontal(scanBitmap)
+            } catch (error: StaffLayoutException) {
+                lastLayoutError = error
+            } finally {
+                if (scanBitmap !== bitmap) scanBitmap.recycle()
+            }
+        }
+        throw lastLayoutError ?: StaffLayoutException("Yatay nota portesi bulunamadı. Görseli düz tutup yeniden dene.")
+    }
+
+    private fun recognizeHorizontal(bitmap: Bitmap): List<DetectedNote> {
         if (bitmap.width < 280 || bitmap.height < 160) {
             throw NoteRecognitionException("Görsel nota okumak için küçük kaldı. Sayfayı daha yakından ve net çek.")
         }
 
         val pixels = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        val dark = BooleanArray(pixels.size) { index ->
-            val color = pixels[index]
-            val luminance = (((color shr 16) and 0xff) * 299 + ((color shr 8) and 0xff) * 587 + (color and 0xff) * 114) / 1000
-            luminance < 168
-        }
+        val darknessThreshold = calculateDarknessThreshold(pixels)
+        val dark = BooleanArray(pixels.size) { index -> luminanceOnWhite(pixels[index]) < darknessThreshold }
 
         val xStart = (bitmap.width * 0.06).roundToInt()
         val xEnd = (bitmap.width * 0.96).roundToInt().coerceAtMost(bitmap.width - 1)
@@ -55,7 +72,7 @@ internal object StaffNoteRecognizer {
         }
 
         if (recognized.isEmpty()) {
-            throw NoteRecognitionException("Porte bulundu ama nota başları seçilemedi. Daha temiz, düz ve aydınlık bir görsel dene.")
+            throw StaffLayoutException("Porte bulundu ama nota başları seçilemedi. Daha temiz, düz ve aydınlık bir görsel dene.")
         }
         if (recognized.size > MAX_NOTES) {
             throw NoteRecognitionException("Bu sayfada çok fazla nota var. İlk sürümde en fazla $MAX_NOTES nota okunabiliyor.")
@@ -63,6 +80,61 @@ internal object StaffNoteRecognizer {
         return recognized
     }
 
+    private fun calculateDarknessThreshold(pixels: IntArray): Int {
+        val histogram = IntArray(256)
+        var totalBrightness = 0.0
+        pixels.forEach { pixel ->
+            val value = luminanceOnWhite(pixel)
+            histogram[value]++
+            totalBrightness += value
+        }
+
+        var backgroundWeight = 0
+        var backgroundBrightness = 0.0
+        var bestVariance = -1.0
+        var otsuThreshold = 0
+        for (value in histogram.indices) {
+            backgroundWeight += histogram[value]
+            if (backgroundWeight == 0) continue
+            val foregroundWeight = pixels.size - backgroundWeight
+            if (foregroundWeight == 0) break
+            backgroundBrightness += value * histogram[value]
+            val backgroundMean = backgroundBrightness / backgroundWeight
+            val foregroundMean = (totalBrightness - backgroundBrightness) / foregroundWeight
+            val meanDifference = backgroundMean - foregroundMean
+            val variance = backgroundWeight.toDouble() * foregroundWeight * meanDifference * meanDifference
+            if (variance > bestVariance) {
+                bestVariance = variance
+                otsuThreshold = value
+            }
+        }
+
+        val antialiasMargin = maxOf(16, ((255 - otsuThreshold) * 0.25).roundToInt())
+        return (otsuThreshold + antialiasMargin).coerceIn(32, 235)
+    }
+
+    private fun luminanceOnWhite(color: Int): Int {
+        val alpha = (color ushr 24) and 0xff
+        val luminance = (((color shr 16) and 0xff) * 299 + ((color shr 8) and 0xff) * 587 + (color and 0xff) * 114) / 1000
+        return (luminance * alpha + 255 * (255 - alpha)) / 255
+    }
+
+    private fun rotateForScan(bitmap: Bitmap, angle: Float): Bitmap {
+        val rotated = Bitmap.createBitmap(
+            bitmap,
+            0,
+            0,
+            bitmap.width,
+            bitmap.height,
+            Matrix().apply { postRotate(angle) },
+            true,
+        )
+        val whiteBackground = Bitmap.createBitmap(rotated.width, rotated.height, Bitmap.Config.ARGB_8888)
+        whiteBackground.eraseColor(Color.WHITE)
+        Canvas(whiteBackground).drawBitmap(rotated, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
+        rotated.recycle()
+        return whiteBackground
+    }
     private fun findStaffLeftEdge(
         dark: BooleanArray,
         width: Int,
@@ -130,7 +202,7 @@ internal object StaffNoteRecognizer {
             .values
             .flatMap { sameStep ->
                 sameStep.sortedByDescending { it.score }.fold(mutableListOf<NoteHead>()) { kept, candidate ->
-                    if (kept.none { abs(it.x - candidate.x) < spacing * 0.55 }) kept += candidate
+                    if (kept.none { abs(it.x - candidate.x) < spacing * 0.70 }) kept += candidate
                     kept
                 }
             }
@@ -138,13 +210,20 @@ internal object StaffNoteRecognizer {
 
         val cleaned = mutableListOf<NoteHead>()
         sameStepDeduplicated.forEach { candidate ->
-            val adjacentStepDuplicate = cleaned.indexOfFirst {
-                abs(it.x - candidate.x) < spacing * 0.40 && abs(it.step - candidate.step) == 1
-            }
-            if (adjacentStepDuplicate < 0) {
+            val nearbyHead = cleaned.indexOfFirst { abs(it.x - candidate.x) < spacing * 0.40 }
+            if (nearbyHead < 0) {
                 cleaned += candidate
-            } else if (candidate.score > cleaned[adjacentStepDuplicate].score) {
-                cleaned[adjacentStepDuplicate] = candidate
+            } else {
+                val existing = cleaned[nearbyHead]
+                if (abs(existing.step - candidate.step) == 2) {
+                    cleaned[nearbyHead] = NoteHead(
+                        x = (existing.x + candidate.x) / 2.0,
+                        step = (existing.step + candidate.step) / 2,
+                        score = maxOf(existing.score, candidate.score),
+                    )
+                } else if (candidate.score > existing.score) {
+                    cleaned[nearbyHead] = candidate
+                }
             }
         }
         return cleaned.sortedBy { it.x }
@@ -166,11 +245,17 @@ internal object StaffNoteRecognizer {
             rowCounts[y] = count
         }
 
-        val threshold = (regionWidth * 0.42).roundToInt()
+        val strongestRowCount = rowCounts.maxOrNull() ?: 0
+        val threshold = maxOf((regionWidth * 0.20).roundToInt(), (strongestRowCount * 0.40).roundToInt())
+        val smoothedCounts = IntArray(height) { row ->
+            val previous = if (row > 0) rowCounts[row - 1] else 0
+            val next = if (row < height - 1) rowCounts[row + 1] else 0
+            maxOf(rowCounts[row], previous, next)
+        }
         val lines = mutableListOf<StaffLine>()
         var y = 0
         while (y < height) {
-            if (rowCounts[y] < threshold) {
+            if (smoothedCounts[y] < threshold) {
                 y++
                 continue
             }
@@ -178,7 +263,7 @@ internal object StaffNoteRecognizer {
             var sumY = 0.0
             var sumWeight = 0.0
             var strongest = 0
-            while (y < height && rowCounts[y] >= threshold) {
+            while (y < height && smoothedCounts[y] >= threshold) {
                 val weight = rowCounts[y].toDouble()
                 sumY += y * weight
                 sumWeight += weight
@@ -193,7 +278,7 @@ internal object StaffNoteRecognizer {
         }
 
         if (lines.size < 5) {
-            throw NoteRecognitionException("Yatay beş çizgili porte bulunamadı. Görseli düz tutup sayfayı daha yakından çek.")
+            throw StaffLayoutException("Yatay beş çizgili porte bulunamadı. Görseli düz tutup sayfayı daha yakından çek.")
         }
 
         val candidates = mutableListOf<StaffCandidate>()
@@ -203,11 +288,11 @@ internal object StaffNoteRecognizer {
             val averageGap = gaps.average()
             if (averageGap < 2.5 || averageGap > minOf(width, height) * 0.18) continue
             val maxDeviation = gaps.maxOf { abs(it - averageGap) } / averageGap
-            if (maxDeviation > 0.24) continue
+            if (maxDeviation > 0.42) continue
             candidates += StaffCandidate(group.toList(), group.map { it.strength }.average() - maxDeviation * 0.5)
         }
         if (candidates.isEmpty()) {
-            throw NoteRecognitionException("Düz, yatay bir nota portesi bulunamadı. Fotoğrafı döndürüp yeniden dene.")
+            throw StaffLayoutException("Düz, yatay bir nota portesi bulunamadı. Fotoğrafı döndürüp yeniden dene.")
         }
 
         val selected = mutableListOf<StaffCandidate>()
@@ -261,6 +346,7 @@ internal object StaffNoteRecognizer {
         return merged.filter { (start, end) -> end - start + 1 in minWidth..maxWidth }
     }
 
+    private val STAFF_SCAN_ANGLES = floatArrayOf(0f, -1f, 1f, -2f, 2f, -3f, 3f)
     private const val FIRST_SYSTEM_NOTE_START_SPACES = 7.0
     private const val NEXT_SYSTEM_NOTE_START_SPACES = 4.8
     private const val MAX_NOTES = 200
