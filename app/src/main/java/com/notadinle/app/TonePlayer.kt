@@ -18,7 +18,8 @@ import kotlin.math.sqrt
 internal object TonePlayer {
     private val demoNotes = intArrayOf(60, 64, 67, 72) // C4, E4, G4, C5
     private const val SAMPLE_RATE = 44_100
-    private const val NOTE_GAP_SECONDS = 0.018
+    private const val NOTE_GAP_SECONDS = 0.008
+    private const val NOTES_PER_AUDIO_CHUNK = 8
 
     suspend fun playSample(instrument: Instrument, tempo: Int) {
         val notes = demoNotes.map { midi -> DetectedNote(midi, midiNoteName(midi)) }
@@ -27,27 +28,12 @@ internal object TonePlayer {
 
     suspend fun playNotes(notes: List<DetectedNote>, instrument: Instrument, tempo: Int) {
         if (notes.isEmpty()) return
-        val pcm = withContext(Dispatchers.Default) {
-            val safeTempo = tempo.coerceIn(60, 140)
-            val gapSamples = (SAMPLE_RATE * NOTE_GAP_SECONDS).roundToInt()
-            val noteLengths = notes.map { note ->
-                (SAMPLE_RATE * 60.0 / safeTempo * note.durationBeats.coerceIn(0.25, 4.0))
-                    .roundToInt()
-                    .coerceAtLeast(1)
-            }
-            val buffer = ShortArray(noteLengths.sumOf { it + gapSamples })
-            var cursor = 0
-
-            notes.forEachIndexed { index, note ->
-                val frequency = 440.0 * 2.0.pow((note.midi - 69) / 12.0)
-                val samples = when (instrument) {
-                    Instrument.Piano -> renderPianoNote(frequency, noteLengths[index])
-                    Instrument.Guitar -> renderGuitarNote(note.midi, frequency, noteLengths[index])
-                }
-                writeNoteWithFades(samples, buffer, cursor)
-                cursor += noteLengths[index] + gapSamples
-            }
-            buffer
+        val safeTempo = tempo.coerceIn(60, 140)
+        val gapSamples = (SAMPLE_RATE * NOTE_GAP_SECONDS).roundToInt()
+        val beatIntervals = notes.map { note ->
+            (SAMPLE_RATE * 60.0 / safeTempo * note.durationBeats.coerceIn(0.25, 6.0))
+                .roundToInt()
+                .coerceAtLeast(1)
         }
 
         val minimumBuffer = AudioTrack.getMinBufferSize(
@@ -78,13 +64,35 @@ internal object TonePlayer {
         try {
             withContext(Dispatchers.IO) {
                 track.play()
-                var written = 0
-                while (written < pcm.size) {
-                    val count = track.write(pcm, written, minOf(4_096, pcm.size - written), AudioTrack.WRITE_BLOCKING)
-                    check(count > 0) { "Ses örneği yazılamadı (AudioTrack=$count)" }
-                    written += count
+                var queuedSamples = 0L
+                notes.indices.chunked(NOTES_PER_AUDIO_CHUNK).forEach { noteIndices ->
+                    val chunk = withContext(Dispatchers.Default) {
+                        val chunkSamples = noteIndices.sumOf { beatIntervals[it] }
+                        val output = ShortArray(chunkSamples)
+                        var cursor = 0
+                        noteIndices.forEach { index ->
+                            val note = notes[index]
+                            val noteLength = (beatIntervals[index] - gapSamples).coerceAtLeast(1)
+                            val frequency = 440.0 * 2.0.pow((note.midi - 69) / 12.0)
+                            val samples = when (instrument) {
+                                Instrument.Piano -> renderPianoNote(frequency, noteLength)
+                                Instrument.Guitar -> renderGuitarNote(note.midi, frequency, noteLength)
+                            }
+                            writeNoteWithFades(samples, output, cursor)
+                            cursor += beatIntervals[index]
+                        }
+                        output
+                    }
+
+                    var written = 0
+                    while (written < chunk.size) {
+                        val count = track.write(chunk, written, minOf(4_096, chunk.size - written), AudioTrack.WRITE_BLOCKING)
+                        check(count > 0) { "Ses örneği yazılamadı (AudioTrack=$count)" }
+                        written += count
+                    }
+                    queuedSamples += chunk.size
                 }
-                while (track.playbackHeadPosition.toLong() < pcm.size) delay(12)
+                while (track.playbackHeadPosition.toLong() < queuedSamples) delay(12)
             }
         } finally {
             withContext(NonCancellable + Dispatchers.IO) {

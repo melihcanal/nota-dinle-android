@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import androidx.core.graphics.createBitmap
 
 internal open class NoteRecognitionException(message: String) : Exception(message)
 private class StaffLayoutException(message: String) : NoteRecognitionException(message)
@@ -15,6 +16,8 @@ internal object StaffNoteRecognizer {
     private data class StaffLine(val y: Double, val strength: Double, val thickness: Int)
     private data class StaffCandidate(val lines: List<StaffLine>, val score: Double)
     private data class NoteHead(val x: Double, val step: Int, val score: Double)
+    private data class StemFeature(val x: Int, val direction: Int, val tipY: Int, val length: Int)
+    private data class RhythmFeature(val head: NoteHead, val filled: Boolean, val stem: StemFeature?, val flags: Int, val dotted: Boolean, val baseBeats: Double)
 
     fun recognize(bitmap: Bitmap): List<DetectedNote> {
         var lastLayoutError: StaffLayoutException? = null
@@ -61,13 +64,19 @@ internal object StaffNoteRecognizer {
                 throw NoteRecognitionException("Akor algılandı. Bu ilk sürüm tek sesli melodi okuyor; akor çalma henüz desteklenmiyor.")
             }
 
-            heads.forEach { head ->
+            val noteDurations = classifyDurations(dark, bitmap.width, bitmap.height, heads, staff, spacing)
+            heads.forEachIndexed { headIndex, head ->
                 val diatonicDegree = 4 * 7 + 2 + head.step // Bottom treble line is E4.
                 val octave = Math.floorDiv(diatonicDegree, 7)
                 val letter = Math.floorMod(diatonicDegree, 7)
                 val pitchClass = intArrayOf(0, 2, 4, 5, 7, 9, 11)[letter]
                 val midi = 12 * (octave + 1) + pitchClass
-                recognized += DetectedNote(midi = midi, name = midiNoteName(midi), durationBeats = 1.0)
+                val durationBeats = noteDurations[headIndex]
+                recognized += DetectedNote(
+                    midi = midi,
+                    name = midiNoteName(midi),
+                    durationBeats = durationBeats,
+                )
             }
         }
 
@@ -79,6 +88,252 @@ internal object StaffNoteRecognizer {
         }
         return recognized
     }
+
+    private fun classifyDurations(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        heads: List<NoteHead>,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): List<Double> {
+        val features = heads.map { head ->
+            val centerY = staff.last().y - head.step * spacing / 2.0
+            val filled = isFilledNoteHead(dark, width, height, head.x, centerY, staff, spacing)
+            val stem = findStem(dark, width, height, head.x, centerY, spacing)
+            val flags = if (filled && stem != null) {
+                detectFlagCount(dark, width, height, stem, staff, spacing)
+            } else {
+                0
+            }
+            val dotted = hasAugmentationDot(dark, width, height, head, heads, centerY, staff, spacing)
+            val baseBeats = when {
+                !filled && stem == null -> 4.0
+                !filled -> 2.0
+                flags >= 2 -> 0.25
+                flags == 1 -> 0.5
+                else -> 1.0
+            }
+            RhythmFeature(head, filled, stem, flags, dotted, baseBeats)
+        }
+
+        val durations = features.map { feature ->
+            if (feature.dotted) feature.baseBeats * 1.5 else feature.baseBeats
+        }.toMutableList()
+
+        for (index in 0 until features.lastIndex) {
+            val first = features[index]
+            val second = features[index + 1]
+            val firstStem = first.stem
+            val secondStem = second.stem
+            val closeBeamedPair = first.filled && second.filled &&
+                firstStem != null && secondStem != null &&
+                firstStem.direction == secondStem.direction &&
+                second.head.x - first.head.x <= spacing * 4.25 &&
+                first.flags > 0 && second.flags > 0
+            if (closeBeamedPair) {
+                // Local scans can split a single shared beam differently at its two stems.
+                val beamCount = minOf(first.flags, second.flags).coerceIn(1, 2)
+                val sharedBeats = if (beamCount == 1) 0.5 else 0.25
+                durations[index] = if (first.dotted) sharedBeats * 1.5 else sharedBeats
+                durations[index + 1] = if (second.dotted) sharedBeats * 1.5 else sharedBeats
+            }
+        }
+
+        return durations
+    }
+
+    private fun isFilledNoteHead(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        centerX: Double,
+        centerY: Double,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): Boolean {
+        val xRadius = (spacing * 0.17).roundToInt().coerceAtLeast(1)
+        var ink = 0
+        var samples = 0
+        for (verticalStep in -3..3) {
+            val y = (centerY + verticalStep * spacing * 0.085).roundToInt()
+            if (y !in 0 until height || isStaffLine(y.toDouble(), staff)) continue
+            for (horizontalStep in -xRadius..xRadius) {
+                val x = centerX.roundToInt() + horizontalStep
+                if (x !in 0 until width) continue
+                samples++
+                if (dark[y * width + x]) ink++
+            }
+        }
+        return samples > 0 && ink.toDouble() / samples >= 0.30
+    }
+
+    private fun findStem(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        centerX: Double,
+        centerY: Double,
+        spacing: Double,
+    ): StemFeature? {
+        val left = (centerX - spacing * 0.82).roundToInt().coerceAtLeast(0)
+        val right = (centerX + spacing * 0.82).roundToInt().coerceAtMost(width - 1)
+        val startDistance = (spacing * 0.32).roundToInt().coerceAtLeast(1)
+        val endDistance = (spacing * 4.35).roundToInt().coerceAtLeast(startDistance + 1)
+        var best: StemFeature? = null
+
+        for (x in left..right) {
+            for (direction in intArrayOf(-1, 1)) {
+                val (runLength, endDistanceForRun) = longestVerticalRun(
+                    dark = dark,
+                    width = width,
+                    height = height,
+                    x = x,
+                    centerY = centerY,
+                    direction = direction,
+                    startDistance = startDistance,
+                    endDistance = endDistance,
+                )
+                if (runLength < spacing * 1.25) continue
+                if (best == null || runLength > best.length) {
+                    best = StemFeature(
+                        x = x,
+                        direction = direction,
+                        tipY = (centerY + direction * endDistanceForRun).roundToInt(),
+                        length = runLength,
+                    )
+                }
+            }
+        }
+        return best
+    }
+
+    private fun longestVerticalRun(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        x: Int,
+        centerY: Double,
+        direction: Int,
+        startDistance: Int,
+        endDistance: Int,
+    ): Pair<Int, Int> {
+        var runStart = -1
+        var lastInk = -1
+        var skippedPixels = 0
+        var bestLength = 0
+        var bestEnd = 0
+
+        fun saveRun() {
+            if (runStart >= 0) {
+                val length = lastInk - runStart + 1
+                if (length > bestLength) {
+                    bestLength = length
+                    bestEnd = lastInk
+                }
+            }
+        }
+
+        for (distance in startDistance..endDistance) {
+            val y = (centerY + direction * distance).roundToInt()
+            val isInk = y in 0 until height && dark[y * width + x]
+            if (isInk) {
+                if (runStart < 0) runStart = distance
+                lastInk = distance
+                skippedPixels = 0
+            } else if (runStart >= 0 && skippedPixels == 0) {
+                skippedPixels = 1
+            } else {
+                saveRun()
+                runStart = -1
+                lastInk = -1
+                skippedPixels = 0
+            }
+        }
+        saveRun()
+        return bestLength to bestEnd
+    }
+
+    private fun detectFlagCount(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        stem: StemFeature,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): Int {
+        val offsets = doubleArrayOf(0.25, 0.4, 0.55, 0.7, 0.85, 1.0)
+        val sideCounts = intArrayOf(-1, 1).map { side ->
+            val columnCounts = offsets.map { offset ->
+                val x = stem.x + side * (spacing * offset).roundToInt()
+                countFlagStrokesAtColumn(dark, width, height, x, stem, staff, spacing)
+            }.sorted()
+            columnCounts[columnCounts.size / 2]
+        }
+        return (sideCounts.maxOrNull() ?: 0).coerceIn(0, 2)
+    }
+
+    private fun countFlagStrokesAtColumn(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        x: Int,
+        stem: StemFeature,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): Int {
+        if (x !in 0 until width) return 0
+        val towardsHead = -stem.direction
+        val startDistance = -(spacing * 0.12).roundToInt()
+        val endDistance = (spacing * 1.35).roundToInt()
+        var strokes = 0
+        var inStroke = false
+
+        for (distance in startDistance..endDistance) {
+            val y = stem.tipY + towardsHead * distance
+            val isInk = y in 0 until height &&
+                !isStaffLine(y.toDouble(), staff) &&
+                dark[y * width + x]
+            if (isInk && !inStroke) {
+                strokes++
+                inStroke = true
+            } else if (!isInk) {
+                inStroke = false
+            }
+        }
+        return strokes.coerceAtMost(2)
+    }
+
+    private fun hasAugmentationDot(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        head: NoteHead,
+        heads: List<NoteHead>,
+        centerY: Double,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): Boolean {
+        val nextHead = heads.asSequence().filter { it.x > head.x }.minOfOrNull { it.x }
+        if (nextHead != null && nextHead - head.x < spacing * 1.4) return false
+
+        val dotX = (head.x + spacing * 1.35).roundToInt()
+        val radiusX = (spacing * 0.25).roundToInt().coerceAtLeast(1)
+        val radiusY = (spacing * 0.60).roundToInt().coerceAtLeast(1)
+        val dotPixels = mutableListOf<Pair<Int, Int>>()
+        for (y in (centerY.roundToInt() - radiusY)..(centerY.roundToInt() + radiusY)) {
+            if (y !in 0 until height || isStaffLine(y.toDouble(), staff)) continue
+            for (x in (dotX - radiusX)..(dotX + radiusX)) {
+                if (x in 0 until width && dark[y * width + x]) dotPixels += x to y
+            }
+        }
+        return dotPixels.size >= 4 && dotPixels.any { (centerX, y) ->
+            dotPixels.count { (x, pixelY) -> abs(x - centerX) <= 1 && abs(pixelY - y) <= 1 } >= 4
+        }
+    }
+
+    private fun isStaffLine(y: Double, staff: List<StaffLine>): Boolean =
+        staff.any { abs(y - it.y) <= maxOf(1.4, it.thickness * 0.75) }
 
     private fun calculateDarknessThreshold(pixels: IntArray): Int {
         val histogram = IntArray(256)
@@ -129,7 +384,7 @@ internal object StaffNoteRecognizer {
             Matrix().apply { postRotate(angle) },
             true,
         )
-        val whiteBackground = Bitmap.createBitmap(rotated.width, rotated.height, Bitmap.Config.ARGB_8888)
+        val whiteBackground = createBitmap(rotated.width, rotated.height)
         whiteBackground.eraseColor(Color.WHITE)
         Canvas(whiteBackground).drawBitmap(rotated, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
         rotated.recycle()
@@ -210,7 +465,7 @@ internal object StaffNoteRecognizer {
 
         val cleaned = mutableListOf<NoteHead>()
         sameStepDeduplicated.forEach { candidate ->
-            val nearbyHead = cleaned.indexOfFirst { abs(it.x - candidate.x) < spacing * 0.40 }
+            val nearbyHead = cleaned.indexOfFirst { abs(it.x - candidate.x) < spacing * 1.35 }
             if (nearbyHead < 0) {
                 cleaned += candidate
             } else {
@@ -226,7 +481,31 @@ internal object StaffNoteRecognizer {
                 }
             }
         }
-        return cleaned.sortedBy { it.x }
+        return cleaned.sortedBy { it.x }.filterNot { head ->
+            head.x >= xEnd - spacing * 3.0 &&
+                isFullStaffVerticalLine(dark, width, height, head.x, staff, spacing)
+        }
+    }
+
+    private fun isFullStaffVerticalLine(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        centerX: Double,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): Boolean {
+        val top = staff.first().y.roundToInt().coerceAtLeast(0)
+        val bottom = staff.last().y.roundToInt().coerceAtMost(height - 1)
+        val radius = (spacing * 0.12).roundToInt().coerceAtLeast(1)
+        val minimumCoverage = (bottom - top + 1) * 0.72
+        for (x in (centerX.roundToInt() - radius)..(centerX.roundToInt() + radius)) {
+            if (x !in 0 until width) continue
+            var inkRows = 0
+            for (y in top..bottom) if (dark[y * width + x]) inkRows++
+            if (inkRows >= minimumCoverage) return true
+        }
+        return false
     }
 
     private fun findStaves(

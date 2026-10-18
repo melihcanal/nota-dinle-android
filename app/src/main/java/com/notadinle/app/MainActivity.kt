@@ -353,6 +353,13 @@ private fun NotaDinleScreen() {
                                     } else note
                                 }
                             },
+                            onAdjustDuration = { index, direction ->
+                                recognizedNotes = recognizedNotes.mapIndexed { noteIndex, note ->
+                                    if (noteIndex == index) {
+                                        note.copy(durationBeats = adjustNoteDuration(note.durationBeats, direction))
+                                    } else note
+                                }
+                            },
                         )
                     }
                 }
@@ -506,6 +513,7 @@ private fun SelectedScoreCard(
     onRecognize: () -> Unit,
     onPlay: () -> Unit,
     onAdjustPitch: (Int, Int) -> Unit,
+    onAdjustDuration: (Int, Int) -> Unit,
 ) {
     Card(
         shape = RoundedCornerShape(20.dp),
@@ -591,7 +599,7 @@ private fun SelectedScoreCard(
                     )
                 }
             } else {
-                Text("${notes.size} NOTA TANINDI · ÇALMADAN ÖNCE KONTROL ET", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+                Text("${notes.size} NOTA TANINDI · SÜRELERİ KONTROL ET", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
                 Spacer(Modifier.height(9.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -603,16 +611,23 @@ private fun SelectedScoreCard(
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
                             Text(note.name, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(2.dp))
+                            Text(noteDurationLabel(note.durationBeats), color = Green, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.height(5.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                 PitchAdjustButton("−") { onAdjustPitch(index, -1) }
                                 PitchAdjustButton("+") { onAdjustPitch(index, 1) }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                PitchAdjustButton("−") { onAdjustDuration(index, -1) }
+                                PitchAdjustButton("+") { onAdjustDuration(index, 1) }
                             }
                         }
                     }
                 }
                 Spacer(Modifier.height(7.dp))
-                Text("− / + düğmeleri notayı bir yarım ses değiştirir. Ritim bu sürümde eşit kabul edilir.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                Text("İlk − / + satırı sesi, ikinci satır nota süresini değiştirir. Süre; nota başı, sap ve kiriş/kuyruk işaretlerinden tahmin edilir.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
                 if (error != null) {
                     Spacer(Modifier.height(6.dp))
                     Text(error, color = Color(0xFF9A4637), fontSize = 12.sp, lineHeight = 18.sp)
