@@ -3,12 +3,9 @@ package com.notadinle.app
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.os.Handler
-import android.os.Looper
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
 import kotlin.math.abs
@@ -23,26 +20,41 @@ internal object TonePlayer {
     private const val SAMPLE_RATE = 44_100
     private const val NOTE_GAP_SECONDS = 0.018
 
-    @OptIn(InternalCoroutinesApi::class)
     suspend fun playSample(instrument: Instrument, tempo: Int) {
+        val notes = demoNotes.map { midi -> DetectedNote(midi, midiNoteName(midi)) }
+        playNotes(notes, instrument, tempo)
+    }
+
+    suspend fun playNotes(notes: List<DetectedNote>, instrument: Instrument, tempo: Int) {
+        if (notes.isEmpty()) return
         val pcm = withContext(Dispatchers.Default) {
-            val beatSamples = (SAMPLE_RATE * 60.0 / tempo.coerceIn(60, 140)).roundToInt()
+            val safeTempo = tempo.coerceIn(60, 140)
             val gapSamples = (SAMPLE_RATE * NOTE_GAP_SECONDS).roundToInt()
-            val noteSamples = (beatSamples - gapSamples).coerceAtLeast(1)
-            val buffer = ShortArray((noteSamples + gapSamples) * demoNotes.size)
+            val noteLengths = notes.map { note ->
+                (SAMPLE_RATE * 60.0 / safeTempo * note.durationBeats.coerceIn(0.25, 4.0))
+                    .roundToInt()
+                    .coerceAtLeast(1)
+            }
+            val buffer = ShortArray(noteLengths.sumOf { it + gapSamples })
             var cursor = 0
 
-            demoNotes.forEach { midi ->
-                val frequency = 440.0 * 2.0.pow((midi - 69) / 12.0)
-                val note = when (instrument) {
-                    Instrument.Piano -> renderPianoNote(frequency, noteSamples)
-                    Instrument.Guitar -> renderGuitarNote(midi, frequency, noteSamples)
+            notes.forEachIndexed { index, note ->
+                val frequency = 440.0 * 2.0.pow((note.midi - 69) / 12.0)
+                val samples = when (instrument) {
+                    Instrument.Piano -> renderPianoNote(frequency, noteLengths[index])
+                    Instrument.Guitar -> renderGuitarNote(note.midi, frequency, noteLengths[index])
                 }
-                writeNoteWithFades(note, buffer, cursor)
-                cursor += noteSamples + gapSamples
+                writeNoteWithFades(samples, buffer, cursor)
+                cursor += noteLengths[index] + gapSamples
             }
             buffer
         }
+
+        val minimumBuffer = AudioTrack.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        ).coerceAtLeast(0)
         val track = withContext(Dispatchers.IO) {
             AudioTrack.Builder()
                 .setAudioAttributes(
@@ -58,36 +70,21 @@ internal object TonePlayer {
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build(),
                 )
-                .setBufferSizeInBytes(pcm.size * Short.SIZE_BYTES)
-                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(maxOf(minimumBuffer * 2, 8_192))
+                .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
-                .also { audioTrack ->
-                    try {
-                        var written = 0
-                        while (written < pcm.size) {
-                            val count = audioTrack.write(pcm, written, pcm.size - written, AudioTrack.WRITE_BLOCKING)
-                            check(count > 0) { "Ses örneği yazılamadı (AudioTrack=$count)" }
-                            written += count
-                        }
-                    } catch (error: Throwable) {
-                        audioTrack.release()
-                        throw error
-                    }
-                }
         }
 
         try {
-            suspendCancellableCoroutine { continuation ->
-                track.setNotificationMarkerPosition(pcm.size)
-                track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
-                    override fun onMarkerReached(audioTrack: AudioTrack) {
-                        continuation.tryResume(Unit)?.let(continuation::completeResume)
-                    }
-
-                    override fun onPeriodicNotification(audioTrack: AudioTrack) = Unit
-                }, Handler(Looper.getMainLooper()))
-                continuation.invokeOnCancellation { runCatching { track.stop() } }
+            withContext(Dispatchers.IO) {
                 track.play()
+                var written = 0
+                while (written < pcm.size) {
+                    val count = track.write(pcm, written, minOf(4_096, pcm.size - written), AudioTrack.WRITE_BLOCKING)
+                    check(count > 0) { "Ses örneği yazılamadı (AudioTrack=$count)" }
+                    written += count
+                }
+                while (track.playbackHeadPosition.toLong() < pcm.size) delay(12)
             }
         } finally {
             withContext(NonCancellable + Dispatchers.IO) {

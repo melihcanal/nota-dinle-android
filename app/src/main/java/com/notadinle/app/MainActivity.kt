@@ -1,19 +1,21 @@
 package com.notadinle.app
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,8 +47,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,9 +67,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.core.view.WindowCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private val Paper = Color(0xFFF7F6F0)
 private val Ink = Color(0xFF1B2B26)
@@ -78,12 +84,7 @@ private val Coral = Color(0xFFE68165)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = android.graphics.Color.rgb(247, 246, 240)
-        window.navigationBarColor = android.graphics.Color.rgb(247, 246, 240)
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
-        }
+        enableEdgeToEdge()
 
         setContent {
             MaterialTheme(
@@ -109,49 +110,160 @@ internal enum class Instrument(val label: String) {
 private data class SelectedScore(
     val name: String,
     val mimeType: String?,
-    val uri: Uri? = null,
-    val cameraImage: Bitmap? = null,
+    val uri: Uri,
 )
 
 @Composable
 private fun NotaDinleScreen() {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var selectedScore by remember { mutableStateOf<SelectedScore?>(null) }
+    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isPreviewLoading by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf<String?>(null) }
+    var recognizedNotes by remember { mutableStateOf<List<DetectedNote>>(emptyList()) }
+    var recognitionError by remember { mutableStateOf<String?>(null) }
+    var recognitionRequestId by remember { mutableIntStateOf(0) }
+    var isRecognizing by remember { mutableStateOf(false) }
     var selectedInstrument by remember { mutableStateOf(Instrument.Piano) }
     var tempo by remember { mutableFloatStateOf(92f) }
     var isPlaying by remember { mutableStateOf(false) }
+    var activeNotes by remember { mutableStateOf<List<DetectedNote>?>(null) }
     var showIntro by remember { mutableStateOf(false) }
+    var inputError by remember { mutableStateOf<String?>(null) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingCameraFile by remember { mutableStateOf<File?>(null) }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            val mimeType = context.contentResolver.getType(uri)
+            isPlaying = false
+            activeNotes = null
+            recognitionRequestId++
+            isRecognizing = false
+            recognizedNotes = emptyList()
+            previewBitmap = null
+            previewError = null
+            recognitionError = null
+            isPreviewLoading = true
             selectedScore = SelectedScore(
                 name = resolveDisplayName(context, uri),
-                mimeType = mimeType,
+                mimeType = context.contentResolver.getType(uri),
                 uri = uri,
             )
+            inputError = null
         }
     }
     val camera = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview(),
-    ) { bitmap ->
-        if (bitmap != null) {
+        contract = ActivityResultContracts.TakePicture(),
+    ) { captured ->
+        val uri = pendingCameraUri
+        if (captured && uri != null) {
+            isPlaying = false
+            activeNotes = null
+            recognitionRequestId++
+            isRecognizing = false
+            recognizedNotes = emptyList()
+            previewBitmap = null
+            previewError = null
+            recognitionError = null
+            isPreviewLoading = true
             selectedScore = SelectedScore(
                 name = "Kamera fotoğrafı",
                 mimeType = "image/jpeg",
-                cameraImage = bitmap,
+                uri = uri,
             )
+            inputError = null
+        } else {
+            pendingCameraFile?.delete()
+        }
+        pendingCameraUri = null
+        pendingCameraFile = null
+    }
+    val openCamera: () -> Unit = {
+        runCatching {
+            val directory = File(context.cacheDir, "scores").apply { mkdirs() }
+            val file = File.createTempFile("nota_", ".jpg", directory)
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            pendingCameraFile = file
+            pendingCameraUri = uri
+            camera.launch(uri)
+        }.onFailure { error ->
+            pendingCameraFile?.delete()
+            pendingCameraFile = null
+            pendingCameraUri = null
+            inputError = error.message ?: "Kamera açılamadı. Bir görsel dosyası seçmeyi dene."
+        }
+    }
+
+    LaunchedEffect(selectedScore) {
+        recognitionRequestId++
+        isRecognizing = false
+        val score = selectedScore
+        previewBitmap = null
+        previewError = null
+        recognitionError = null
+        recognizedNotes = emptyList()
+        if (score == null) return@LaunchedEffect
+
+        isPreviewLoading = true
+        try {
+            previewBitmap = withContext(Dispatchers.IO) {
+                ScoreImageLoader.load(context, score.uri, score.mimeType)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            previewError = error.message ?: "Bu dosya açılamadı. Görsel veya PDF seçmeyi dene."
+        } finally {
+            isPreviewLoading = false
         }
     }
 
     LaunchedEffect(isPlaying) {
         if (isPlaying) {
             try {
-                TonePlayer.playSample(selectedInstrument, tempo.toInt())
+                val notes = activeNotes
+                if (notes.isNullOrEmpty()) {
+                    TonePlayer.playSample(selectedInstrument, tempo.toInt())
+                } else {
+                    TonePlayer.playNotes(notes, selectedInstrument, tempo.toInt())
+                }
             } finally {
                 isPlaying = false
+            }
+        }
+    }
+
+    val recognizeScore: () -> Unit = {
+        val requestId = recognitionRequestId + 1
+        recognitionRequestId = requestId
+        isRecognizing = true
+        recognitionError = null
+        coroutineScope.launch {
+            val score = selectedScore
+            try {
+                if (score == null) return@launch
+                val bitmap = previewBitmap ?: withContext(Dispatchers.IO) {
+                    ScoreImageLoader.load(context, score.uri, score.mimeType)
+                }
+                val notes = withContext(Dispatchers.Default) {
+                    StaffNoteRecognizer.recognize(bitmap)
+                }
+                if (requestId == recognitionRequestId && selectedScore == score) {
+                    previewBitmap = bitmap
+                    previewError = null
+                    recognizedNotes = notes
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (requestId == recognitionRequestId) {
+                    recognitionError = error.message ?: "Notalar bu görselden okunamadı. Daha net bir fotoğraf dene."
+                }
+            } finally {
+                if (requestId == recognitionRequestId) isRecognizing = false
             }
         }
     }
@@ -188,7 +300,7 @@ private fun NotaDinleScreen() {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "Bir nota sayfası ekle. Müziğin seçtiğin enstrümanla canlansın.",
+                text = "Bir nota sayfası ekle. Notaları kontrol et ve seçtiğin enstrümanla dinle.",
                 color = Muted,
                 fontSize = 15.sp,
                 lineHeight = 23.sp,
@@ -197,22 +309,58 @@ private fun NotaDinleScreen() {
 
             Spacer(Modifier.height(22.dp))
             ImportCard(
-                onCamera = { camera.launch(null) },
+                onCamera = openCamera,
                 onPickFile = { filePicker.launch(arrayOf("image/*", "application/pdf")) },
             )
+            inputError?.let { error ->
+                Text(error, color = Color(0xFF9A4637), fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 8.dp))
+            }
 
             AnimatedVisibility(visible = selectedScore != null) {
                 selectedScore?.let { score ->
                     Column {
                         Spacer(Modifier.height(14.dp))
-                        SelectedScoreCard(score = score, onRemove = { selectedScore = null })
+                        SelectedScoreCard(
+                            score = score,
+                            preview = previewBitmap,
+                            isPreviewLoading = isPreviewLoading,
+                            error = recognitionError ?: previewError,
+                            notes = recognizedNotes,
+                            isRecognizing = isRecognizing,
+                            isPlaying = isPlaying && activeNotes != null,
+                            instrument = selectedInstrument,
+                            onRemove = {
+                                isPlaying = false
+                                activeNotes = null
+                                recognitionRequestId++
+                                isRecognizing = false
+                                selectedScore = null
+                            },
+                            onRecognize = recognizeScore,
+                            onPlay = {
+                                if (isPlaying) {
+                                    isPlaying = false
+                                } else {
+                                    activeNotes = recognizedNotes
+                                    isPlaying = true
+                                }
+                            },
+                            onAdjustPitch = { index, delta ->
+                                recognizedNotes = recognizedNotes.mapIndexed { noteIndex, note ->
+                                    if (noteIndex == index) {
+                                        val midi = (note.midi + delta).coerceIn(36, 96)
+                                        note.copy(midi = midi, name = midiNoteName(midi))
+                                    } else note
+                                }
+                            },
+                        )
                     }
                 }
             }
 
             Spacer(Modifier.height(30.dp))
             SectionHeading(
-                eyebrow = "İLK ADIM",
+                eyebrow = "ÖRNEK SES",
                 title = "Önce bir ses duyalım",
             )
             Spacer(Modifier.height(14.dp))
@@ -221,8 +369,15 @@ private fun NotaDinleScreen() {
                 onSelectInstrument = { selectedInstrument = it },
                 tempo = tempo,
                 onTempoChange = { tempo = it },
-                isPlaying = isPlaying,
-                onPlay = { isPlaying = !isPlaying },
+                isPlaying = isPlaying && activeNotes == null,
+                onPlay = {
+                    if (isPlaying) {
+                        isPlaying = false
+                    } else {
+                        activeNotes = null
+                        isPlaying = true
+                    }
+                },
             )
 
             Spacer(Modifier.height(26.dp))
@@ -241,7 +396,6 @@ private fun NotaDinleScreen() {
         }
     }
 }
-
 @Composable
 private fun TopBar(onInfo: () -> Unit) {
     Row(
@@ -339,19 +493,20 @@ private fun ActionButton(
 }
 
 @Composable
-private fun SelectedScoreCard(score: SelectedScore, onRemove: () -> Unit) {
-    val context = LocalContext.current
-    val preview = remember(score) { mutableStateOf(score.cameraImage) }
-    LaunchedEffect(score.uri) {
-        if (score.uri != null && score.mimeType?.startsWith("image/") == true) {
-            preview.value = withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.openInputStream(score.uri)?.use { stream -> BitmapFactory.decodeStream(stream) }
-                }.getOrNull()
-            }
-        }
-    }
-
+private fun SelectedScoreCard(
+    score: SelectedScore,
+    preview: Bitmap?,
+    isPreviewLoading: Boolean,
+    error: String?,
+    notes: List<DetectedNote>,
+    isRecognizing: Boolean,
+    isPlaying: Boolean,
+    instrument: Instrument,
+    onRemove: () -> Unit,
+    onRecognize: () -> Unit,
+    onPlay: () -> Unit,
+    onAdjustPitch: (Int, Int) -> Unit,
+) {
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFCF5)),
@@ -360,19 +515,18 @@ private fun SelectedScoreCard(score: SelectedScore, onRemove: () -> Unit) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF2EEE3)),
+                    modifier = Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF2EEE3)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val thumb = preview.value
-                    if (thumb != null) {
+                    if (preview != null) {
                         androidx.compose.foundation.Image(
-                            bitmap = thumb.asImageBitmap(),
+                            bitmap = preview.asImageBitmap(),
                             contentDescription = "Seçilen nota sayfasının önizlemesi",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {
-                        Text(if (score.mimeType == "application/pdf") "PDF" else "♫", color = Green, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text(if (score.mimeType == "application/pdf" || score.name.endsWith(".pdf", true)) "PDF" else "♫", color = Green, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 Spacer(Modifier.width(12.dp))
@@ -392,23 +546,110 @@ private fun SelectedScoreCard(score: SelectedScore, onRemove: () -> Unit) {
                     modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onRemove).padding(8.dp),
                 )
             }
+            if (preview != null) {
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.foundation.Image(
+                    bitmap = preview.asImageBitmap(),
+                    contentDescription = "Nota sayfası önizlemesi",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(12.dp)).background(Color.White),
+                )
+            } else if (isPreviewLoading) {
+                Spacer(Modifier.height(10.dp))
+                Text("Sayfa hazırlanıyor…", color = Muted, fontSize = 12.sp)
+            }
             Spacer(Modifier.height(13.dp))
             Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFFECE7DA)))
-            Spacer(Modifier.height(11.dp))
-            Row(verticalAlignment = Alignment.Top) {
-                Text("i", color = Color(0xFFA66750), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.height(12.dp))
+
+            if (notes.isEmpty()) {
                 Text(
-                    text = "Nota görselini tanıyıp düzenleme adımı bu ilk prototipte henüz etkin değil. Dosya seçme akışı hazır; nota tanıma sıradaki geliştirme.",
+                    text = "Önce notaları tanı. İlk sürüm tek, yatay sol anahtarı portesi ve tek sesli melodi içindir.",
                     color = Color(0xFF806F62),
                     fontSize = 12.sp,
                     lineHeight = 18.sp,
                 )
+                if (error != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(error, color = Color(0xFF9A4637), fontSize = 12.sp, lineHeight = 18.sp)
+                }
+                Spacer(Modifier.height(11.dp))
+                Button(
+                    onClick = onRecognize,
+                    enabled = !isRecognizing && !isPreviewLoading,
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Green),
+                ) {
+                    Text(
+                        when {
+                            isRecognizing -> "Notalar okunuyor…"
+                            isPreviewLoading -> "Görsel yükleniyor…"
+                            else -> "Notaları tanı"
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            } else {
+                Text("${notes.size} NOTA TANINDI · ÇALMADAN ÖNCE KONTROL ET", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+                Spacer(Modifier.height(9.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    notes.forEachIndexed { index, note ->
+                        Column(
+                            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White).border(1.dp, Line, RoundedCornerShape(12.dp)).padding(horizontal = 7.dp, vertical = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(note.name, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                PitchAdjustButton("−") { onAdjustPitch(index, -1) }
+                                PitchAdjustButton("+") { onAdjustPitch(index, 1) }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(7.dp))
+                Text("− / + düğmeleri notayı bir yarım ses değiştirir. Ritim bu sürümde eşit kabul edilir.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                if (error != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(error, color = Color(0xFF9A4637), fontSize = 12.sp, lineHeight = 18.sp)
+                }
+                Spacer(Modifier.height(11.dp))
+                Button(
+                    onClick = onPlay,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Ink),
+                ) {
+                    Text(if (isPlaying) "Durdur" else "${notes.size} notayı ${instrument.label.lowercase()} ile çal", fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    onClick = onRecognize,
+                    enabled = !isRecognizing,
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = PaleGreen, contentColor = Green),
+                ) {
+                    Text(if (isRecognizing) "Yeniden okunuyor…" else "Görseli yeniden tara", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }
 }
 
+@Composable
+private fun PitchAdjustButton(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier.size(32.dp).clip(CircleShape).background(PaleGreen).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = Green, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
 @Composable
 private fun SectionHeading(eyebrow: String, title: String) {
     Column {
@@ -525,7 +766,7 @@ private fun IntroDialog(onDismiss: () -> Unit) {
                 Text("NotaDinle nasıl çalışacak?", color = Ink, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Basılı nota sayfasını çek veya PDF/görsel seç. Uygulama notaları tanısın; sen kontrol edip piyano ya da gitar sesiyle dinle. Bu ilk sürümde dosya ekleme ve örnek ses akışı hazır.",
+                    "Basılı nota sayfasını çek veya PDF/görsel seç. Uygulama tek bir sol anahtarı portedeki notaları tanır; sen kontrol edip piyano ya da gitarla dinlersin.",
                     color = Muted,
                     fontSize = 14.sp,
                     lineHeight = 21.sp,
