@@ -1,5 +1,6 @@
 package com.notadinle.app
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -7,13 +8,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 internal object TonePlayer {
     private val demoNotes = intArrayOf(60, 64, 67, 72) // C4, E4, G4, C5
@@ -21,13 +18,14 @@ internal object TonePlayer {
     private const val NOTE_GAP_SECONDS = 0.008
     private const val NOTES_PER_AUDIO_CHUNK = 8
 
-    suspend fun playSample(instrument: Instrument, tempo: Int) {
+    suspend fun playSample(context: Context, instrument: Instrument, tempo: Int) {
         val notes = demoNotes.map { midi -> DetectedNote(midi, midiNoteName(midi)) }
-        playNotes(notes, instrument, tempo)
+        playNotes(context, notes, instrument, tempo)
     }
 
-    suspend fun playNotes(notes: List<DetectedNote>, instrument: Instrument, tempo: Int) {
+    suspend fun playNotes(context: Context, notes: List<DetectedNote>, instrument: Instrument, tempo: Int) {
         if (notes.isEmpty()) return
+        val samples = InstrumentSampleBank.preload(context, instrument, notes)
         val safeTempo = tempo.coerceIn(60, 140)
         val gapSamples = (SAMPLE_RATE * NOTE_GAP_SECONDS).roundToInt()
         val beatIntervals = notes.map { note ->
@@ -73,12 +71,9 @@ internal object TonePlayer {
                         noteIndices.forEach { index ->
                             val note = notes[index]
                             val noteLength = (beatIntervals[index] - gapSamples).coerceAtLeast(1)
-                            val frequency = 440.0 * 2.0.pow((note.midi - 69) / 12.0)
-                            val samples = when (instrument) {
-                                Instrument.Piano -> renderPianoNote(frequency, noteLength)
-                                Instrument.Guitar -> renderGuitarNote(note.midi, frequency, noteLength)
-                            }
-                            writeNoteWithFades(samples, output, cursor)
+                            val source = samples.getValue(note.midi)
+                            val samplesForNote = renderSample(source, note.midi, noteLength)
+                            writeNoteWithFades(samplesForNote, output, cursor)
                             cursor += beatIntervals[index]
                         }
                         output
@@ -102,63 +97,34 @@ internal object TonePlayer {
         }
     }
 
-    /** Bright, percussive piano partials with slightly inharmonic upper strings. */
-    private fun renderPianoNote(frequency: Double, sampleCount: Int): FloatArray {
-        val partialLevels = doubleArrayOf(1.0, 0.54, 0.30, 0.17, 0.095, 0.052)
-        val inharmonicity = 0.00018
-        val samples = FloatArray(sampleCount)
+    private fun renderSample(sample: DecodedInstrumentSample, targetMidi: Int, outputLength: Int): FloatArray {
+        val output = FloatArray(outputLength)
+        if (sample.frameCount < 2) return output
+        val pitchRatio = 2.0.pow((targetMidi - sample.sourceMidi) / 12.0)
+        val sourceFramesPerOutputSample = pitchRatio * sample.sampleRate / SAMPLE_RATE
 
-        for (sample in samples.indices) {
-            val t = sample.toDouble() / SAMPLE_RATE
-            var value = 0.0
-            partialLevels.forEachIndexed { index, level ->
-                val partial = index + 1
-                val stiffStringRatio = partial * sqrt(1.0 + inharmonicity * partial * partial)
-                val partialDecay = 1.15 + partial * 0.72
-                value += level * exp(-partialDecay * t) *
-                    sin(2.0 * PI * frequency * stiffStringRatio * t)
-            }
-            val hammerAttack = 1.0 - exp(-t * 185.0)
-            samples[sample] = (value * hammerAttack).toFloat()
+        output.indices.forEach { outputIndex ->
+            val sourcePosition = outputIndex * sourceFramesPerOutputSample
+            val firstFrame = sourcePosition.toInt()
+            if (firstFrame >= sample.frameCount - 1) return@forEach
+            val secondFrame = firstFrame + 1
+            val fraction = sourcePosition - firstFrame
+            val first = sample.monoFrame(firstFrame)
+            val second = sample.monoFrame(secondFrame)
+            output[outputIndex] = (first + (second - first) * fraction).toFloat()
         }
-        return samples
-    }
-
-    /** Karplus–Strong plucked-string model for a recognizably different guitar timbre. */
-    private fun renderGuitarNote(midi: Int, frequency: Double, sampleCount: Int): FloatArray {
-        val delayLength = (SAMPLE_RATE / frequency).roundToInt().coerceAtLeast(2)
-        val string = FloatArray(delayLength)
-        var seed = midi * 0x45D9F3B
-        fun noise(): Double {
-            seed = seed xor (seed shl 13)
-            seed = seed xor (seed ushr 17)
-            seed = seed xor (seed shl 5)
-            return (seed ushr 1).toDouble() / Int.MAX_VALUE * 2.0 - 1.0
-        }
-        string.indices.forEach { string[it] = (noise() * 0.72).toFloat() }
-
-        val samples = FloatArray(sampleCount)
-        var index = 0
-        for (sample in samples.indices) {
-            val nextIndex = if (index + 1 == string.size) 0 else index + 1
-            val current = string[index].toDouble()
-            val next = string[nextIndex].toDouble()
-            string[index] = ((current + next) * 0.5 * 0.999985).toFloat()
-            samples[sample] = (current * exp(-(sample.toDouble() / SAMPLE_RATE) * 0.42)).toFloat()
-            index = nextIndex
-        }
-        return samples
+        return output
     }
 
     private fun writeNoteWithFades(note: FloatArray, output: ShortArray, offset: Int) {
         val peak = note.maxOfOrNull { abs(it.toDouble()) } ?: 0.0
         val gain = if (peak > 0.000001) 0.70 / peak else 0.0
-        val attackSamples = (SAMPLE_RATE * 0.004).roundToInt().coerceAtLeast(1)
-        val releaseSamples = (SAMPLE_RATE * 0.024).roundToInt().coerceAtMost(note.size / 3)
+        val attackSamples = (SAMPLE_RATE * 0.002).roundToInt().coerceAtLeast(1)
+        val releaseSamples = (SAMPLE_RATE * 0.035).roundToInt().coerceAtMost(note.size / 3)
 
         note.indices.forEach { sample ->
             val attack = (sample.toDouble() / attackSamples).coerceAtMost(1.0)
-            val release = if (sample >= note.size - releaseSamples) {
+            val release = if (releaseSamples > 0 && sample >= note.size - releaseSamples) {
                 (note.size - sample).toDouble() / releaseSamples
             } else {
                 1.0

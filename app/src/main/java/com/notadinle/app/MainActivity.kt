@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
 }
 
 internal enum class Instrument(val label: String) {
-    Piano("Piyano"), Guitar("Gitar")
+    Piano("Akustik piyano"), Guitar("Akustik gitar")
 }
 
 private data class SelectedScore(
@@ -226,9 +226,9 @@ private fun NotaDinleScreen() {
             try {
                 val notes = activeNotes
                 if (notes.isNullOrEmpty()) {
-                    TonePlayer.playSample(selectedInstrument, tempo.toInt())
+                    TonePlayer.playSample(context.applicationContext, selectedInstrument, tempo.toInt())
                 } else {
-                    TonePlayer.playNotes(notes, selectedInstrument, tempo.toInt())
+                    TonePlayer.playNotes(context.applicationContext, notes, selectedInstrument, tempo.toInt())
                 }
             } finally {
                 isPlaying = false
@@ -711,8 +711,8 @@ private fun SampleCard(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(13.dp)).background(Color(0xFFF2F4EF)).padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                InstrumentOption("Piyano", selectedInstrument == Instrument.Piano, Modifier.weight(1f)) { onSelectInstrument(Instrument.Piano) }
-                InstrumentOption("Gitar", selectedInstrument == Instrument.Guitar, Modifier.weight(1f)) { onSelectInstrument(Instrument.Guitar) }
+                InstrumentOption("Akustik piyano", selectedInstrument == Instrument.Piano, Modifier.weight(1f)) { onSelectInstrument(Instrument.Piano) }
+                InstrumentOption("Akustik gitar", selectedInstrument == Instrument.Guitar, Modifier.weight(1f)) { onSelectInstrument(Instrument.Guitar) }
             }
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
