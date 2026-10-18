@@ -146,7 +146,7 @@ private fun NotaDinleScreen() {
         }
     }
 
-    LaunchedEffect(isPlaying, selectedInstrument, tempo) {
+    LaunchedEffect(isPlaying) {
         if (isPlaying) {
             try {
                 TonePlayer.playSample(selectedInstrument, tempo.toInt())

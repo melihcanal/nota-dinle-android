@@ -1,9 +1,28 @@
+# Gradle build outputs and local caches
 .gradle/
-build/
 **/build/
+build/
+out/
+.kotlin/
+.kotlin-daemon/
+
+# Android Studio machine-specific state
 .idea/
 local.properties
 *.iml
+
+# Native build output and generated Android packages
+.externalNativeBuild/
+.cxx/
 captures/
+*.apk
+*.aab
+*.hprof
+
+# Signing keys and local secrets
+*.jks
+*.keystore
+
+# Operating system files
 .DS_Store
 Thumbs.db
