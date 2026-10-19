@@ -14,6 +14,7 @@ import com.notadinle.app.domain.model.Instrument
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.milliseconds
 
 internal object TonePlayer {
     private val demoNotes = intArrayOf(60, 64, 67, 72) // C4, E4, G4, C5
@@ -90,7 +91,7 @@ internal object TonePlayer {
                     }
                     queuedSamples += chunk.size
                 }
-                while (track.playbackHeadPosition.toLong() < queuedSamples) delay(12)
+                while (track.playbackHeadPosition.toLong() < queuedSamples) delay(12.milliseconds)
             }
         } finally {
             withContext(NonCancellable + Dispatchers.IO) {

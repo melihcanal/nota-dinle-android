@@ -2,9 +2,9 @@ package com.notadinle.app.data.score
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.net.Uri
-import com.notadinle.omr.GrayImage
+import androidx.core.net.toUri
 import com.notadinle.app.domain.model.ScoreDocument
+import com.notadinle.omr.GrayImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -21,7 +21,7 @@ class AndroidScoreImageRepository(context: Context) {
     suspend fun load(document: ScoreDocument, pageIndex: Int = 0): LoadedScore = withContext(Dispatchers.IO) {
         val loaded = ScoreImageLoader.load(
             context = appContext,
-            uri = Uri.parse(document.uri),
+            uri = document.uri.toUri(),
             mimeType = document.mimeType,
             pageIndex = pageIndex,
         )
