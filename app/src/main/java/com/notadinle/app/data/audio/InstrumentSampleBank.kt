@@ -1,4 +1,4 @@
-package com.notadinle.app
+package com.notadinle.app.data.audio
 
 import android.content.Context
 import android.media.AudioFormat
@@ -17,6 +17,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import com.notadinle.omr.DetectedNote
+import com.notadinle.app.domain.model.Instrument
 
 internal data class DecodedInstrumentSample(
     val sourceMidi: Int,

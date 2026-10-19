@@ -1,12 +1,12 @@
-package com.notadinle.app
+package com.notadinle.omr
 
-internal data class DetectedNote(
+data class DetectedNote(
     val midi: Int,
     val name: String,
     val durationBeats: Double = 1.0,
 )
 
-internal fun midiNoteName(midi: Int): String {
+fun midiNoteName(midi: Int): String {
     val names = arrayOf("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
     val safeMidi = midi.coerceIn(24, 96)
     return "${names[Math.floorMod(safeMidi, 12)]}${Math.floorDiv(safeMidi, 12) - 1}"
@@ -14,7 +14,7 @@ internal fun midiNoteName(midi: Int): String {
 
 private val supportedBeatLengths = doubleArrayOf(0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 
-internal fun noteDurationLabel(beats: Double): String = when (beats) {
+fun noteDurationLabel(beats: Double): String = when (beats) {
     0.25 -> "¼ vuruş"
     0.5 -> "½ vuruş"
     0.75 -> "¾ vuruş"
@@ -27,7 +27,7 @@ internal fun noteDurationLabel(beats: Double): String = when (beats) {
     else -> "1 vuruş"
 }
 
-internal fun adjustNoteDuration(beats: Double, direction: Int): Double {
+fun adjustNoteDuration(beats: Double, direction: Int): Double {
     val currentIndex = supportedBeatLengths.indices.minByOrNull {
         kotlin.math.abs(supportedBeatLengths[it] - beats)
     } ?: 3

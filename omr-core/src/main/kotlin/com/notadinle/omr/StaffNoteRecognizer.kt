@@ -1,62 +1,52 @@
-package com.notadinle.app
+package com.notadinle.omr
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Matrix
-import android.graphics.Paint
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import androidx.core.graphics.createBitmap
 
-internal open class NoteRecognitionException(message: String) : Exception(message)
+open class NoteRecognitionException(message: String) : Exception(message)
 private class StaffLayoutException(message: String) : NoteRecognitionException(message)
 
-internal object StaffNoteRecognizer {
+object StaffNoteRecognizer {
     private data class StaffLine(val y: Double, val strength: Double, val thickness: Int)
     private data class StaffCandidate(val lines: List<StaffLine>, val score: Double)
     private data class NoteHead(val x: Double, val step: Int, val score: Double)
     private data class StemFeature(val x: Int, val direction: Int, val tipY: Int, val length: Int)
     private data class RhythmFeature(val head: NoteHead, val filled: Boolean, val stem: StemFeature?, val flags: Int, val dotted: Boolean, val baseBeats: Double)
 
-    fun recognize(bitmap: Bitmap): List<DetectedNote> {
+    fun recognize(image: GrayImage): List<DetectedNote> {
         var lastLayoutError: StaffLayoutException? = null
         for (angle in STAFF_SCAN_ANGLES) {
-            val scanBitmap = if (angle == 0f) bitmap else rotateForScan(bitmap, angle)
             try {
-                return recognizeHorizontal(scanBitmap)
+                return recognizeHorizontal(if (angle == 0f) image else rotateForScan(image, angle))
             } catch (error: StaffLayoutException) {
                 lastLayoutError = error
-            } finally {
-                if (scanBitmap !== bitmap) scanBitmap.recycle()
             }
         }
         throw lastLayoutError ?: StaffLayoutException("Yatay nota portesi bulunamadı. Görseli düz tutup yeniden dene.")
     }
 
-    private fun recognizeHorizontal(bitmap: Bitmap): List<DetectedNote> {
-        if (bitmap.width < 280 || bitmap.height < 160) {
+    private fun recognizeHorizontal(image: GrayImage): List<DetectedNote> {
+        if (image.width < 280 || image.height < 160) {
             throw NoteRecognitionException("Görsel nota okumak için küçük kaldı. Sayfayı daha yakından ve net çek.")
         }
 
-        val pixels = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        val pixels = image.luminance
         val darknessThreshold = calculateDarknessThreshold(pixels)
-        val dark = BooleanArray(pixels.size) { index -> luminanceOnWhite(pixels[index]) < darknessThreshold }
+        val dark = BooleanArray(pixels.size) { index -> (pixels[index].toInt() and 0xff) < darknessThreshold }
 
-        val xStart = (bitmap.width * 0.06).roundToInt()
-        val xEnd = (bitmap.width * 0.96).roundToInt().coerceAtMost(bitmap.width - 1)
-        val staves = findStaves(dark, bitmap.width, bitmap.height, xStart, xEnd)
+        val xStart = (image.width * 0.06).roundToInt()
+        val xEnd = (image.width * 0.96).roundToInt().coerceAtMost(image.width - 1)
+        val staves = findStaves(dark, image.width, image.height, xStart, xEnd)
         val recognized = mutableListOf<DetectedNote>()
 
         staves.forEachIndexed { staffIndex, staff ->
             val spacing = staff.zipWithNext { first, second -> second.y - first.y }.average()
             if (spacing < 2.5) return@forEachIndexed
             // Skip the clef and time-signature area before reading the melody.
-            val staffStartX = findStaffLeftEdge(dark, bitmap.width, bitmap.height, xStart, xEnd, staff)
+            val staffStartX = findStaffLeftEdge(dark, image.width, image.height, xStart, xEnd, staff)
             val leadingSymbolsWidth = if (staffIndex == 0) FIRST_SYSTEM_NOTE_START_SPACES else NEXT_SYSTEM_NOTE_START_SPACES
             val noteStartX = (staffStartX + spacing * leadingSymbolsWidth).roundToInt().coerceAtMost(xEnd)
-            val heads = findNoteHeads(dark, bitmap.width, bitmap.height, noteStartX, xEnd, staff, spacing)
+            val heads = findNoteHeads(dark, image.width, image.height, noteStartX, xEnd, staff, spacing)
             if (heads.isEmpty()) return@forEachIndexed
             if (heads.zipWithNext().any { (first, second) ->
                     abs(first.x - second.x) < spacing * 0.45 && abs(first.step - second.step) > 1
@@ -64,7 +54,7 @@ internal object StaffNoteRecognizer {
                 throw NoteRecognitionException("Akor algılandı. Bu ilk sürüm tek sesli melodi okuyor; akor çalma henüz desteklenmiyor.")
             }
 
-            val noteDurations = classifyDurations(dark, bitmap.width, bitmap.height, heads, staff, spacing)
+            val noteDurations = classifyDurations(dark, image.width, image.height, heads, staff, spacing)
             heads.forEachIndexed { headIndex, head ->
                 val diatonicDegree = 4 * 7 + 2 + head.step // Bottom treble line is E4.
                 val octave = Math.floorDiv(diatonicDegree, 7)
@@ -335,11 +325,11 @@ internal object StaffNoteRecognizer {
     private fun isStaffLine(y: Double, staff: List<StaffLine>): Boolean =
         staff.any { abs(y - it.y) <= maxOf(1.4, it.thickness * 0.75) }
 
-    private fun calculateDarknessThreshold(pixels: IntArray): Int {
+    private fun calculateDarknessThreshold(pixels: ByteArray): Int {
         val histogram = IntArray(256)
         var totalBrightness = 0.0
         pixels.forEach { pixel ->
-            val value = luminanceOnWhite(pixel)
+            val value = pixel.toInt() and 0xff
             histogram[value]++
             totalBrightness += value
         }
@@ -368,28 +358,7 @@ internal object StaffNoteRecognizer {
         return (otsuThreshold + antialiasMargin).coerceIn(32, 235)
     }
 
-    private fun luminanceOnWhite(color: Int): Int {
-        val alpha = (color ushr 24) and 0xff
-        val luminance = (((color shr 16) and 0xff) * 299 + ((color shr 8) and 0xff) * 587 + (color and 0xff) * 114) / 1000
-        return (luminance * alpha + 255 * (255 - alpha)) / 255
-    }
-
-    private fun rotateForScan(bitmap: Bitmap, angle: Float): Bitmap {
-        val rotated = Bitmap.createBitmap(
-            bitmap,
-            0,
-            0,
-            bitmap.width,
-            bitmap.height,
-            Matrix().apply { postRotate(angle) },
-            true,
-        )
-        val whiteBackground = createBitmap(rotated.width, rotated.height)
-        whiteBackground.eraseColor(Color.WHITE)
-        Canvas(whiteBackground).drawBitmap(rotated, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
-        rotated.recycle()
-        return whiteBackground
-    }
+    private fun rotateForScan(image: GrayImage, angle: Float): GrayImage = image.rotate(angle)
     private fun findStaffLeftEdge(
         dark: BooleanArray,
         width: Int,

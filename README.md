@@ -1,33 +1,33 @@
 # NotaDinle
 
-Basılı nota sayfası fotoğrafını veya bir PDF/görsel dosyasını cihaz üzerinde okuyup piyano ya da gitar sesiyle dinlemeyi sağlayan Android uygulaması.
+Android app that reads a photographed or imported score and plays the detected melody with local acoustic piano or guitar samples.
 
-## Özellikler
+## On-device processing
 
-- Kamera ile tam çözünürlüklü nota fotoğrafı çekme
-- Cihazdan görsel veya PDF seçme; PDF'in ilk sayfasını gösterme
-- Çevrimdışı, temel nota tanıma
-- Tanınan notaları çalmadan önce listeleme ve yarım ses yukarı/aşağı düzeltme
-- Tanınan melodiyi piyano veya gitar sesiyle, ayarlanabilir tempoda çalma
-- Kısa örnek diziyi çalma
+The score image stays on the phone. Image selection uses Android's document picker, camera capture uses the system camera app, and PDF pages are rasterized with Android `PdfRenderer`. There is no network permission, cloud recognition API, or per-scan service cost.
 
-## Nota tanımanın kapsamı
+The `omr-core` module is plain Kotlin/JVM and has no Android dependencies. It receives an 8-bit grayscale raster and performs deskew attempts, staff-line detection, treble-staff pitch mapping, notehead/stem/flag/dot analysis, and beat-length estimation locally. The first version targets clear, printed, single-voice treble-clef scores; handwritten notation, key signatures/accidentals, multiple voices, and chords need further work and user correction.
 
-Bu ilk sürüm temiz ve yatay bir sayfadaki birden fazla sol anahtarı portesini ve tek sesli melodileri okuyabilir. Nota adları porte üstünde metin olarak yazıyorsa bu alanı nota algılamasına katmaz; porte başındaki sol anahtarı ve ölçü işaretlerini de nota olarak okumamaya çalışır. Nota başlarının yüksekliğinden doğal sesleri (C–B) tanır. Ritim şimdilik eşit dörtlük kabul edilir ve en fazla 200 nota okunur. Diyez/bemol ve donanım, sus işaretleri, akorlar, el yazısı ve eğik/perspektifli sayfalar henüz desteklenmiyor. Tanınan her notayı çalmadan önce ekranda kontrol edip yarım ses düzeltmesi yapabilirsin.
+## Structure
 
-Nota görüntüsü sunucuya gönderilmez; tanıma cihazda yapılır.
+```text
+app/
+  data/score       Android image decoding, EXIF handling, PDF page rendering
+  data/omr         Local OMR repository adapter
+  data/audio       Offline sample loading and playback
+  domain/          Score/instrument models, repository contracts, use case
+  presentation/    Compose screen and screen-level ViewModel
+omr-core/          Platform-independent image and score recognition code
+```
 
-## Android Studio'da açma
+The UI follows unidirectional data flow: `HomeViewModel` exposes a `StateFlow<HomeUiState>` and receives actions from Compose. `AppContainer` provides the small number of app dependencies without introducing a DI framework.
 
-Projeyi Android Studio'da açıp Gradle eşitlemesinin tamamlanmasını bekle. Android SDK Platform 37 ve JDK 17 veya üzeri gerekir. Projede Gradle Wrapper bulunur; komut satırından Windows'ta `gradlew.bat assembleDebug` ile debug APK oluşturabilirsin.
+## Build
 
-APK çıktısı: `app/build/outputs/apk/debug/app-debug.apk`
+Open this folder in Android Studio and run the `app` configuration, or build from PowerShell:
 
-## Teknik yapı
+```powershell
+./gradlew.bat :app:assembleDebug
+```
 
-- Kotlin, Jetpack Compose ve Material 3
-- Basit porte ve nota başı algılama, Android Bitmap işleme ile çevrimdışı yapılır
-- PDF'in ilk sayfası Android `PdfRenderer` ile görüntülenir
-- `AudioTrack` ile piyano ve gitar için ayrı sentez
-- Paket adı: `com.notadinle.app`
-- Android API 26 ve üzeri, compile SDK 37
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.

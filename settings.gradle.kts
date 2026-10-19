@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "NotaDinle"
-include(":app")
+include(":app", ":omr-core")

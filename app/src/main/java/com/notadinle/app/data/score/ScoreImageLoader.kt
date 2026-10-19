@@ -1,25 +1,33 @@
-package com.notadinle.app
+package com.notadinle.app.data.score
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import androidx.exifinterface.media.ExifInterface
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import kotlin.math.roundToInt
 import androidx.core.graphics.createBitmap
+import androidx.exifinterface.media.ExifInterface
+import kotlin.math.roundToInt
+
+internal data class LoadedBitmap(
+    val bitmap: Bitmap,
+    val pageIndex: Int,
+    val pageCount: Int,
+)
 
 internal object ScoreImageLoader {
     private const val MAX_IMAGE_SIDE = 1800
 
-    fun load(context: Context, uri: Uri, mimeType: String?): Bitmap {
+    fun load(context: Context, uri: Uri, mimeType: String?, pageIndex: Int): LoadedBitmap {
         val displayName = queryDisplayName(context, uri).orEmpty()
         val isPdf = mimeType == "application/pdf" ||
             context.contentResolver.getType(uri) == "application/pdf" ||
             displayName.endsWith(".pdf", ignoreCase = true)
 
-        return if (isPdf) renderFirstPdfPage(context, uri) else decodeImage(context, uri)
+        return if (isPdf) renderPdfPage(context, uri, pageIndex) else {
+            LoadedBitmap(decodeImage(context, uri), pageIndex = 0, pageCount = 1)
+        }
     }
 
     private fun decodeImage(context: Context, uri: Uri): Bitmap {
@@ -30,9 +38,7 @@ internal object ScoreImageLoader {
         }
 
         var sampleSize = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > MAX_IMAGE_SIDE) {
-            sampleSize *= 2
-        }
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > MAX_IMAGE_SIDE) sampleSize *= 2
         val options = BitmapFactory.Options().apply {
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -42,6 +48,7 @@ internal object ScoreImageLoader {
         } ?: throw IllegalArgumentException("Görsel dosyası okunamadı.")
         return applyExifOrientation(context, uri, bitmap)
     }
+
     private fun applyExifOrientation(context: Context, uri: Uri, bitmap: Bitmap): Bitmap {
         val orientation = runCatching {
             context.contentResolver.openInputStream(uri)?.use { input ->
@@ -55,25 +62,32 @@ internal object ScoreImageLoader {
             else -> 0f
         }
         if (rotation == 0f) return bitmap
-        val matrix = Matrix().apply { postRotate(rotation) }
-        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true).also {
-            if (it !== bitmap) bitmap.recycle()
-        }
+        return Bitmap.createBitmap(
+            bitmap,
+            0,
+            0,
+            bitmap.width,
+            bitmap.height,
+            Matrix().apply { postRotate(rotation) },
+            true,
+        ).also { if (it !== bitmap) bitmap.recycle() }
     }
-    private fun renderFirstPdfPage(context: Context, uri: Uri): Bitmap {
+
+    private fun renderPdfPage(context: Context, uri: Uri, requestedPage: Int): LoadedBitmap {
         val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
             ?: throw IllegalArgumentException("PDF dosyası açılamadı.")
         descriptor.use { fileDescriptor ->
             PdfRenderer(fileDescriptor).use { renderer ->
                 if (renderer.pageCount == 0) throw IllegalArgumentException("PDF dosyasında sayfa bulunamadı.")
-                renderer.openPage(0).use { page ->
+                val pageIndex = requestedPage.coerceIn(0, renderer.pageCount - 1)
+                renderer.openPage(pageIndex).use { page ->
                     val scale = minOf(1.0, MAX_IMAGE_SIDE.toDouble() / maxOf(page.width, page.height))
                     val width = (page.width * scale).roundToInt().coerceAtLeast(1)
                     val height = (page.height * scale).roundToInt().coerceAtLeast(1)
                     val bitmap = createBitmap(width, height)
                     bitmap.eraseColor(android.graphics.Color.WHITE)
                     page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    return bitmap
+                    return LoadedBitmap(bitmap, pageIndex, renderer.pageCount)
                 }
             }
         }

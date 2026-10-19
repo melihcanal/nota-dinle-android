@@ -1,4 +1,4 @@
-package com.notadinle.app
+package com.notadinle.app.data.audio
 
 import android.content.Context
 import android.media.AudioAttributes
@@ -8,6 +8,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import com.notadinle.omr.DetectedNote
+import com.notadinle.omr.midiNoteName
+import com.notadinle.app.domain.model.Instrument
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt

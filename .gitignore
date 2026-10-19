@@ -1,20 +1,20 @@
-# Gradle build outputs and local caches
+# Gradle and Android build output
 .gradle/
 **/build/
 build/
 out/
 .kotlin/
 .kotlin-daemon/
+.externalNativeBuild/
+.cxx/
+captures/
 
 # Android Studio machine-specific state
 .idea/
 local.properties
 *.iml
 
-# Native build output and generated Android packages
-.externalNativeBuild/
-.cxx/
-captures/
+# Local packages and crash dumps
 *.apk
 *.aab
 *.hprof
@@ -22,6 +22,8 @@ captures/
 # Signing keys and local secrets
 *.jks
 *.keystore
+*.pem
+*.p12
 
 # Operating system files
 .DS_Store
