@@ -73,12 +73,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private val Paper = Color(0xFFF7F6F0)
-private val Ink = Color(0xFF1B2B26)
-private val Muted = Color(0xFF718078)
-private val Green = Color(0xFF28725E)
-private val PaleGreen = Color(0xFFE7F0E9)
-private val Line = Color(0xFFE7E8E1)
+private val Paper = Color(0xFFF5F7F5)
+private val Ink = Color(0xFF17231E)
+private val Muted = Color(0xFF6D7A72)
+private val Green = Color(0xFF176B55)
+private val PaleGreen = Color(0xFFE5F3EB)
+private val Line = Color(0xFFE4EAE6)
 private val Coral = Color(0xFFE68165)
 
 class MainActivity : ComponentActivity() {
@@ -268,6 +268,12 @@ private fun NotaDinleScreen() {
         }
     }
 
+    val currentStep = when {
+        recognizedNotes.isNotEmpty() -> 3
+        selectedScore != null -> 2
+        else -> 1
+    }
+
     Box(Modifier.fillMaxSize().background(Paper)) {
         Column(
             modifier = Modifier
@@ -283,7 +289,7 @@ private fun NotaDinleScreen() {
             Spacer(Modifier.height(30.dp))
 
             Text(
-                text = "KÂĞITTAN SES'E",
+                text = "KÂĞITTAN MÜZİĞE",
                 color = Green,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -291,7 +297,7 @@ private fun NotaDinleScreen() {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "Notanı,\nhemen duy.",
+                text = "Notanı hemen\ndinle.",
                 color = Ink,
                 fontSize = 37.sp,
                 lineHeight = 42.sp,
@@ -300,14 +306,16 @@ private fun NotaDinleScreen() {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "Bir nota sayfası ekle. Notaları kontrol et ve seçtiğin enstrümanla dinle.",
+                text = "Bir nota sayfası ekle; akustik piyano veya gitarla çal.",
                 color = Muted,
                 fontSize = 15.sp,
                 lineHeight = 23.sp,
-                modifier = Modifier.fillMaxWidth(0.9f),
+                modifier = Modifier.fillMaxWidth(0.94f),
             )
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(20.dp))
+            WorkflowSteps(currentStep)
+            Spacer(Modifier.height(16.dp))
             ImportCard(
                 onCamera = openCamera,
                 onPickFile = { filePicker.launch(arrayOf("image/*", "application/pdf")) },
@@ -367,8 +375,8 @@ private fun NotaDinleScreen() {
 
             Spacer(Modifier.height(30.dp))
             SectionHeading(
-                eyebrow = "ÖRNEK SES",
-                title = "Önce bir ses duyalım",
+                eyebrow = "ÇALMA AYARLARI",
+                title = "Sesini ve tempoyu seç",
             )
             Spacer(Modifier.height(14.dp))
             SampleCard(
@@ -387,11 +395,9 @@ private fun NotaDinleScreen() {
                 },
             )
 
-            Spacer(Modifier.height(26.dp))
-            HowItWorks()
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(22.dp))
             Text(
-                text = "NotaDinle • İlk sürüm",
+                text = "NotaDinle  ·  Akustik piyano ve gitar",
                 color = Color(0xFF97A19A),
                 fontSize = 12.sp,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -403,6 +409,58 @@ private fun NotaDinleScreen() {
         }
     }
 }
+@Composable
+private fun WorkflowSteps(currentStep: Int) {
+    val labels = listOf("Sayfa", "Tanı", "Dinle")
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        labels.forEachIndexed { index, label ->
+            val step = index + 1
+            val isCurrent = step == currentStep
+            val isComplete = step < currentStep
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (isCurrent) Green else if (isComplete) PaleGreen else Color.White)
+                    .border(
+                        width = if (isCurrent) 0.dp else 1.dp,
+                        color = if (isComplete) PaleGreen else Line,
+                        shape = RoundedCornerShape(14.dp),
+                    )
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(if (isCurrent) Color.White.copy(alpha = 0.18f) else Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (isComplete) "✓" else step.toString(),
+                        color = if (isCurrent) Color.White else Green,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Text(
+                    label,
+                    color = if (isCurrent) Color.White else Green,
+                    fontSize = 10.sp,
+                    fontWeight = if (isCurrent || isComplete) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun TopBar(onInfo: () -> Unit) {
     Row(
@@ -417,8 +475,8 @@ private fun TopBar(onInfo: () -> Unit) {
         }
         Spacer(Modifier.width(10.dp))
         Column {
-            Text("NOTADİNLE", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
-            Text("Müziğini keşfet", color = Muted, fontSize = 11.sp)
+            Text("NotaDinle", color = Ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text("Nota sayfasından sese", color = Muted, fontSize = 11.sp)
         }
         Spacer(Modifier.weight(1f))
         Box(
@@ -459,14 +517,14 @@ private fun ImportCard(onCamera: () -> Unit, onPickFile: () -> Unit) {
                 ActionButton(
                     modifier = Modifier.weight(1f),
                     icon = IconKind.Camera,
-                    label = "Fotoğraf çek",
+                    label = "Kamerayla tara",
                     primary = true,
                     onClick = onCamera,
                 )
                 ActionButton(
                     modifier = Modifier.weight(1f),
                     icon = IconKind.Folder,
-                    label = "Dosya seç",
+                    label = "PDF / görsel seç",
                     primary = false,
                     onClick = onPickFile,
                 )
@@ -613,12 +671,14 @@ private fun SelectedScoreCard(
                             Text(note.name, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(2.dp))
                             Text(noteDurationLabel(note.durationBeats), color = Green, fontSize = 10.sp, fontWeight = FontWeight.Medium)
-                            Spacer(Modifier.height(5.dp))
+                            Spacer(Modifier.height(6.dp))
+                            Text("Perde", color = Muted, fontSize = 9.sp, fontWeight = FontWeight.Medium)
                             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                 PitchAdjustButton("−") { onAdjustPitch(index, -1) }
                                 PitchAdjustButton("+") { onAdjustPitch(index, 1) }
                             }
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(5.dp))
+                            Text("Süre", color = Muted, fontSize = 9.sp, fontWeight = FontWeight.Medium)
                             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                 PitchAdjustButton("−") { onAdjustDuration(index, -1) }
                                 PitchAdjustButton("+") { onAdjustDuration(index, 1) }
@@ -627,7 +687,7 @@ private fun SelectedScoreCard(
                     }
                 }
                 Spacer(Modifier.height(7.dp))
-                Text("İlk − / + satırı sesi, ikinci satır nota süresini değiştirir. Süre; nota başı, sap ve kiriş/kuyruk işaretlerinden tahmin edilir.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                Text("Perde ve süreyi kendi bölümündeki − / + düğmeleriyle değiştirebilirsin.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
                 if (error != null) {
                     Spacer(Modifier.height(6.dp))
                     Text(error, color = Color(0xFF9A4637), fontSize = 12.sp, lineHeight = 18.sp)
@@ -691,20 +751,13 @@ private fun SampleCard(
         Column(Modifier.fillMaxWidth().padding(17.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Do Majör", color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Kısa örnek dizi  ·  4 nota", color = Muted, fontSize = 12.sp)
+                    Text("Örnek melodi", color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Enstrüman sesini burada deneyebilirsin", color = Muted, fontSize = 12.sp)
                 }
                 Box(Modifier.clip(CircleShape).background(Color(0xFFFFF0E8)).padding(horizontal = 10.dp, vertical = 6.dp)) {
                     Text("ÖRNEK", color = Color(0xFFB66A51), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
                 }
             }
-            Spacer(Modifier.height(15.dp))
-            Box(
-                Modifier.fillMaxWidth().height(86.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFFFAF9F4)),
-            ) {
-                StaffPreview(Modifier.fillMaxSize())
-            }
-            Spacer(Modifier.height(15.dp))
             Text("ENSTRÜMAN", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
             Spacer(Modifier.height(8.dp))
             Row(
@@ -735,7 +788,7 @@ private fun SampleCard(
             ) {
                 LineIcon(if (isPlaying) IconKind.Pause else IconKind.Play, Modifier.size(17.dp), Color.White)
                 Spacer(Modifier.width(8.dp))
-                Text(if (isPlaying) "Durdur" else "${selectedInstrument.label} ile dinle", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(if (isPlaying) "Örnek sesi durdur" else "Örnek sesi dinle", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             }
         }
     }
