@@ -38,7 +38,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -130,6 +132,7 @@ private fun NotaDinleScreen() {
     var isPlaying by remember { mutableStateOf(false) }
     var activeNotes by remember { mutableStateOf<List<DetectedNote>?>(null) }
     var showIntro by remember { mutableStateOf(false) }
+    var showPlaybackSettings by remember { mutableStateOf(false) }
     var inputError by remember { mutableStateOf<String?>(null) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     var pendingCameraFile by remember { mutableStateOf<File?>(null) }
@@ -289,7 +292,7 @@ private fun NotaDinleScreen() {
             Spacer(Modifier.height(30.dp))
 
             Text(
-                text = "KÂĞITTAN MÜZİĞE",
+                text = "NOTA TANIMA",
                 color = Green,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -297,16 +300,16 @@ private fun NotaDinleScreen() {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "Notanı hemen\ndinle.",
+                text = "Nota sayfası",
                 color = Ink,
-                fontSize = 37.sp,
-                lineHeight = 42.sp,
+                fontSize = 29.sp,
+                lineHeight = 35.sp,
                 fontWeight = FontWeight.SemiBold,
-                letterSpacing = (-1.1).sp,
+                letterSpacing = (-0.5).sp,
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "Bir nota sayfası ekle; akustik piyano veya gitarla çal.",
+                text = "Fotoğraf veya PDF seç; notaları piyano ya da gitarla dinle.",
                 color = Muted,
                 fontSize = 15.sp,
                 lineHeight = 23.sp,
@@ -315,7 +318,19 @@ private fun NotaDinleScreen() {
 
             Spacer(Modifier.height(20.dp))
             WorkflowSteps(currentStep)
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+            PlaybackSettingsSummary(
+                instrument = selectedInstrument,
+                tempo = tempo.toInt(),
+                onClick = {
+                    if (isPlaying) {
+                        isPlaying = false
+                        activeNotes = null
+                    }
+                    showPlaybackSettings = true
+                },
+            )
+            Spacer(Modifier.height(12.dp))
             ImportCard(
                 onCamera = openCamera,
                 onPickFile = { filePicker.launch(arrayOf("image/*", "application/pdf")) },
@@ -373,13 +388,14 @@ private fun NotaDinleScreen() {
                 }
             }
 
-            Spacer(Modifier.height(30.dp))
-            SectionHeading(
-                eyebrow = "ÇALMA AYARLARI",
-                title = "Sesini ve tempoyu seç",
-            )
-            Spacer(Modifier.height(14.dp))
-            SampleCard(
+            Spacer(Modifier.height(18.dp))
+        }
+
+        if (showIntro) {
+            IntroDialog(onDismiss = { showIntro = false })
+        }
+        if (showPlaybackSettings) {
+            PlaybackSettingsSheet(
                 selectedInstrument = selectedInstrument,
                 onSelectInstrument = { selectedInstrument = it },
                 tempo = tempo,
@@ -393,22 +409,92 @@ private fun NotaDinleScreen() {
                         isPlaying = true
                     }
                 },
+                onDismiss = { showPlaybackSettings = false },
             )
-
-            Spacer(Modifier.height(22.dp))
-            Text(
-                text = "NotaDinle  ·  Akustik piyano ve gitar",
-                color = Color(0xFF97A19A),
-                fontSize = 12.sp,
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            )
-        }
-
-        if (showIntro) {
-            IntroDialog(onDismiss = { showIntro = false })
         }
     }
 }
+@Composable
+private fun PlaybackSettingsSummary(
+    instrument: Instrument,
+    tempo: Int,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(17.dp))
+            .background(Color.White)
+            .border(1.dp, Line, RoundedCornerShape(17.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(PaleGreen),
+            contentAlignment = Alignment.Center,
+        ) {
+            LineIcon(IconKind.Tune, Modifier.size(20.dp), Green)
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text("ÇALMA AYARLARI", color = Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(instrument.label + "  ·  " + tempo.toString() + " BPM", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Text("Düzenle", color = Green, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaybackSettingsSheet(
+    selectedInstrument: Instrument,
+    onSelectInstrument: (Instrument) -> Unit,
+    tempo: Float,
+    onTempoChange: (Float) -> Unit,
+    isPlaying: Boolean,
+    onPlay: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Paper,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 18.dp),
+        ) {
+            Text("Çalma ayarları", color = Ink, fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(5.dp))
+            Text("Enstrüman ve tempo, nota çalarken de kullanılır.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+            Spacer(Modifier.height(17.dp))
+            SampleCard(
+                selectedInstrument = selectedInstrument,
+                onSelectInstrument = onSelectInstrument,
+                tempo = tempo,
+                onTempoChange = onTempoChange,
+                isPlaying = isPlaying,
+                onPlay = onPlay,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(15.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Green),
+            ) {
+                Text("Bitti", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
 @Composable
 private fun WorkflowSteps(currentStep: Int) {
     val labels = listOf("Sayfa", "Tanı", "Dinle")
@@ -848,7 +934,7 @@ private fun IntroDialog(onDismiss: () -> Unit) {
     }
 }
 
-private enum class IconKind { Camera, Folder, Play, Pause }
+private enum class IconKind { Camera, Folder, Play, Pause, Tune }
 
 @Composable
 private fun MusicMark(modifier: Modifier = Modifier, color: Color) {
@@ -891,6 +977,22 @@ private fun LineIcon(kind: IconKind, modifier: Modifier = Modifier, color: Color
             IconKind.Pause -> {
                 drawRoundRect(color, topLeft = androidx.compose.ui.geometry.Offset(6f * sx, 4f * sy), size = androidx.compose.ui.geometry.Size(4f * sx, 16f * sy), cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f * sx))
                 drawRoundRect(color, topLeft = androidx.compose.ui.geometry.Offset(14f * sx, 4f * sy), size = androidx.compose.ui.geometry.Size(4f * sx, 16f * sy), cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f * sx))
+            }
+            IconKind.Tune -> {
+                listOf(8f to 7f, 16f to 12f, 10f to 17f).forEach { (x, y) ->
+                    drawLine(
+                        color,
+                        androidx.compose.ui.geometry.Offset(4f * sx, y * sy),
+                        androidx.compose.ui.geometry.Offset(20f * sx, y * sy),
+                        strokeWidth = 1.7f * sx,
+                        cap = StrokeCap.Round,
+                    )
+                    drawCircle(
+                        color,
+                        radius = 2.3f * sx,
+                        center = androidx.compose.ui.geometry.Offset(x * sx, y * sy),
+                    )
+                }
             }
         }
     }
