@@ -289,25 +289,7 @@ private fun NotaDinleScreen() {
         ) {
             Spacer(Modifier.height(10.dp))
             TopBar(onInfo = { showIntro = true })
-            Spacer(Modifier.height(30.dp))
-
-            Text(
-                text = "NOTA TANIMA",
-                color = Green,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.7.sp,
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = "Nota sayfası",
-                color = Ink,
-                fontSize = 29.sp,
-                lineHeight = 35.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = (-0.5).sp,
-            )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(22.dp))
             Text(
                 text = "Fotoğraf veya PDF seç; notaları piyano ya da gitarla dinle.",
                 color = Muted,
