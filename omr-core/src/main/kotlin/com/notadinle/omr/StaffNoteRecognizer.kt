@@ -1,6 +1,9 @@
 package com.notadinle.omr
 
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.math.roundToInt
 
 open class NoteRecognitionException(message: String) : Exception(message)
@@ -9,15 +12,25 @@ private class StaffLayoutException(message: String) : NoteRecognitionException(m
 object StaffNoteRecognizer {
     private data class StaffLine(val y: Double, val strength: Double, val thickness: Int)
     private data class StaffCandidate(val lines: List<StaffLine>, val score: Double)
+    private data class SkewScore(val angle: Float, val score: Long)
     private data class NoteHead(val x: Double, val step: Int, val score: Double)
     private data class StemFeature(val x: Int, val direction: Int, val tipY: Int, val length: Int)
     private data class RhythmFeature(val head: NoteHead, val filled: Boolean, val stem: StemFeature?, val flags: Int, val dotted: Boolean, val baseBeats: Double)
 
     fun recognize(image: GrayImage): List<DetectedNote> {
+        if (image.width < 280 || image.height < 160) {
+            throw NoteRecognitionException("Görsel nota okumak için küçük kaldı. Sayfayı daha yakından ve net çek.")
+        }
+
+        val sourceDark = binarizeAdaptive(image)
         var lastLayoutError: StaffLayoutException? = null
-        for (angle in STAFF_SCAN_ANGLES) {
+        for (angle in rankDeskewAngles(sourceDark, image.width, image.height)) {
             try {
-                return recognizeHorizontal(if (angle == 0f) image else rotateForScan(image, angle))
+                return if (angle == 0f) {
+                    recognizeHorizontal(image, sourceDark)
+                } else {
+                    recognizeHorizontal(image.rotate(angle))
+                }
             } catch (error: StaffLayoutException) {
                 lastLayoutError = error
             }
@@ -25,14 +38,12 @@ object StaffNoteRecognizer {
         throw lastLayoutError ?: StaffLayoutException("Yatay nota portesi bulunamadı. Görseli düz tutup yeniden dene.")
     }
 
-    private fun recognizeHorizontal(image: GrayImage): List<DetectedNote> {
+    private fun recognizeHorizontal(image: GrayImage, precomputedDark: BooleanArray? = null): List<DetectedNote> {
         if (image.width < 280 || image.height < 160) {
             throw NoteRecognitionException("Görsel nota okumak için küçük kaldı. Sayfayı daha yakından ve net çek.")
         }
 
-        val pixels = image.luminance
-        val darknessThreshold = calculateDarknessThreshold(pixels)
-        val dark = BooleanArray(pixels.size) { index -> (pixels[index].toInt() and 0xff) < darknessThreshold }
+        val dark = precomputedDark ?: binarizeAdaptive(image)
 
         val xStart = (image.width * 0.06).roundToInt()
         val xEnd = (image.width * 0.96).roundToInt().coerceAtMost(image.width - 1)
@@ -325,40 +336,143 @@ object StaffNoteRecognizer {
     private fun isStaffLine(y: Double, staff: List<StaffLine>): Boolean =
         staff.any { abs(y - it.y) <= maxOf(1.4, it.thickness * 0.75) }
 
-    private fun calculateDarknessThreshold(pixels: ByteArray): Int {
-        val histogram = IntArray(256)
-        var totalBrightness = 0.0
-        pixels.forEach { pixel ->
-            val value = pixel.toInt() and 0xff
-            histogram[value]++
-            totalBrightness += value
-        }
+    /** Local mean/variance thresholding keeps ink visible when paper brightness changes across a photo. */
+    private fun binarizeAdaptive(image: GrayImage): BooleanArray {
+        val width = image.width
+        val height = image.height
+        val pixels = image.luminance
+        val radius = (minOf(width, height) / 90).coerceIn(5, 18)
+        val verticalSums = LongArray(width)
+        val verticalSquares = LongArray(width)
 
-        var backgroundWeight = 0
-        var backgroundBrightness = 0.0
-        var bestVariance = -1.0
-        var otsuThreshold = 0
-        for (value in histogram.indices) {
-            backgroundWeight += histogram[value]
-            if (backgroundWeight == 0) continue
-            val foregroundWeight = pixels.size - backgroundWeight
-            if (foregroundWeight == 0) break
-            backgroundBrightness += value * histogram[value]
-            val backgroundMean = backgroundBrightness / backgroundWeight
-            val foregroundMean = (totalBrightness - backgroundBrightness) / foregroundWeight
-            val meanDifference = backgroundMean - foregroundMean
-            val variance = backgroundWeight.toDouble() * foregroundWeight * meanDifference * meanDifference
-            if (variance > bestVariance) {
-                bestVariance = variance
-                otsuThreshold = value
+        for (y in 0..minOf(height - 1, radius)) {
+            val rowOffset = y * width
+            for (x in 0 until width) {
+                val value = pixels[rowOffset + x].toInt() and 0xff
+                verticalSums[x] += value
+                verticalSquares[x] += value.toLong() * value
             }
         }
 
-        val antialiasMargin = maxOf(16, ((255 - otsuThreshold) * 0.25).roundToInt())
-        return (otsuThreshold + antialiasMargin).coerceIn(32, 235)
+        val dark = BooleanArray(width * height)
+        for (y in 0 until height) {
+            var windowSum = 0L
+            var windowSquares = 0L
+            val initialEnd = minOf(width - 1, radius)
+            for (x in 0..initialEnd) {
+                windowSum += verticalSums[x]
+                windowSquares += verticalSquares[x]
+            }
+            val yStart = maxOf(0, y - radius)
+            val yEnd = minOf(height - 1, y + radius)
+            val windowHeight = yEnd - yStart + 1
+
+            for (x in 0 until width) {
+                if (x > 0) {
+                    val addX = x + radius
+                    val removeX = x - radius - 1
+                    if (addX < width) {
+                        windowSum += verticalSums[addX]
+                        windowSquares += verticalSquares[addX]
+                    }
+                    if (removeX >= 0) {
+                        windowSum -= verticalSums[removeX]
+                        windowSquares -= verticalSquares[removeX]
+                    }
+                }
+
+                val xStart = maxOf(0, x - radius)
+                val xEnd = minOf(width - 1, x + radius)
+                val sampleCount = (xEnd - xStart + 1) * windowHeight
+                val mean = windowSum.toDouble() / sampleCount
+                val variance = (windowSquares.toDouble() / sampleCount - mean * mean).coerceAtLeast(0.0)
+                val threshold = (mean - maxOf(9.0, sqrt(variance) * 0.22)).coerceIn(24.0, 245.0)
+                dark[y * width + x] = (pixels[y * width + x].toInt() and 0xff) < threshold
+            }
+
+            val addY = y + radius + 1
+            val removeY = y - radius
+            if (addY < height || removeY >= 0) {
+                for (x in 0 until width) {
+                    if (addY < height) {
+                        val value = pixels[addY * width + x].toInt() and 0xff
+                        verticalSums[x] += value
+                        verticalSquares[x] += value.toLong() * value
+                    }
+                    if (removeY >= 0) {
+                        val value = pixels[removeY * width + x].toInt() and 0xff
+                        verticalSums[x] -= value
+                        verticalSquares[x] -= value.toLong() * value
+                    }
+                }
+            }
+        }
+        return dark
     }
 
-    private fun rotateForScan(image: GrayImage, angle: Float): GrayImage = image.rotate(angle)
+    /** Scores horizontal projection concentration and rotates only the best few candidates. */
+    private fun rankDeskewAngles(dark: BooleanArray, width: Int, height: Int): List<Float> {
+        val stride = ceil(sqrt(width.toDouble() * height / MAX_PROJECTION_SAMPLES)).toInt().coerceAtLeast(1)
+        val xStart = (width * 0.04).roundToInt()
+        val xEnd = (width * 0.96).roundToInt().coerceAtMost(width - 1)
+        val yStart = (height * 0.04).roundToInt()
+        val yEnd = (height * 0.96).roundToInt().coerceAtMost(height - 1)
+        val sampleCapacity = ((xEnd - xStart) / stride + 1) * ((yEnd - yStart) / stride + 1)
+        val sampleXs = IntArray(sampleCapacity)
+        val sampleYs = IntArray(sampleCapacity)
+        var sampleCount = 0
+        for (y in yStart..yEnd step stride) {
+            val offset = y * width
+            for (x in xStart..xEnd step stride) {
+                if (dark[offset + x]) {
+                    sampleXs[sampleCount] = x
+                    sampleYs[sampleCount] = y
+                    sampleCount++
+                }
+            }
+        }
+        if (sampleCount < MIN_SKEW_SAMPLES) return listOf(0f)
+
+        val centerX = (width - 1) / 2.0
+        val centerY = (height - 1) / 2.0
+        val projectionPadding = ceil(width * sin(Math.toRadians(MAX_SKEW_DEGREES.toDouble()))).toInt() + 2
+        val projectionSize = height + projectionPadding * 2
+        val scores = ArrayList<SkewScore>(SKEW_STEPS * 2 + 1)
+        for (step in -SKEW_STEPS..SKEW_STEPS) {
+            val angle = step * SKEW_STEP_DEGREES
+            val radians = Math.toRadians(angle.toDouble())
+            val cosine = kotlin.math.cos(radians)
+            val sine = sin(radians)
+            val projection = IntArray(projectionSize)
+            for (index in 0 until sampleCount) {
+                val x = sampleXs[index]
+                val y = sampleYs[index]
+                val projectedY = ((y - centerY) * cosine + (x - centerX) * sine + centerY).roundToInt()
+                val bin = projectedY + projectionPadding
+                if (bin in projection.indices) projection[bin]++
+            }
+            var score = 0L
+            projection.forEach { count -> score += count.toLong() * count }
+            scores += SkewScore(angle, score)
+        }
+
+        val zeroScore = scores.first { it.angle == 0f }
+        val ranked = scores.sortedByDescending { it.score }
+        val best = ranked.first()
+        if (abs(best.angle) < MIN_DESKEW_ANGLE || best.score <= zeroScore.score * MIN_DESKEW_IMPROVEMENT) {
+            return listOf(0f)
+        }
+
+        val fallbacks = ranked
+            .asSequence()
+            .filter { abs(it.angle - best.angle) >= MIN_FALLBACK_ANGLE_DISTANCE }
+            .filter { it.score >= best.score * MIN_FALLBACK_SCORE_RATIO }
+            .take(2)
+            .map { it.angle }
+            .toList()
+        return (listOf(best.angle) + fallbacks + 0f).distinct().take(MAX_DESKEW_ATTEMPTS)
+    }
+
     private fun findStaffLeftEdge(
         dark: BooleanArray,
         width: Int,
@@ -422,6 +536,7 @@ object StaffNoteRecognizer {
         }
 
         val sameStepDeduplicated = candidates
+            .mapNotNull { candidate -> refineNoteHead(candidate, dark, width, height, staff, spacing) }
             .groupBy { it.step }
             .values
             .flatMap { sameStep ->
@@ -439,21 +554,16 @@ object StaffNoteRecognizer {
                 cleaned += candidate
             } else {
                 val existing = cleaned[nearbyHead]
-                if (abs(existing.step - candidate.step) == 2) {
-                    cleaned[nearbyHead] = NoteHead(
-                        x = (existing.x + candidate.x) / 2.0,
-                        step = (existing.step + candidate.step) / 2,
-                        score = maxOf(existing.score, candidate.score),
-                    )
-                } else if (candidate.score > existing.score) {
+                if (candidate.score > existing.score) {
                     cleaned[nearbyHead] = candidate
                 }
             }
         }
-        return cleaned.sortedBy { it.x }.filterNot { head ->
+        val result = cleaned.sortedBy { it.x }.filterNot { head ->
             head.x >= xEnd - spacing * 3.0 &&
                 isFullStaffVerticalLine(dark, width, height, head.x, staff, spacing)
         }
+        return result
     }
 
     private fun isFullStaffVerticalLine(
@@ -475,6 +585,92 @@ object StaffNoteRecognizer {
             if (inkRows >= minimumCoverage) return true
         }
         return false
+    }
+
+    private fun refineNoteHead(
+        candidate: NoteHead,
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): NoteHead? {
+        val maximumStep = 10
+        val minimumStep = -4
+        val xSearchRadius = (spacing * 0.12).roundToInt().coerceAtLeast(1)
+        var bestScore = 0.0
+        var bestX = candidate.x
+        var bestStep = candidate.step
+        for (step in (candidate.step - 1).coerceAtLeast(minimumStep)..(candidate.step + 1).coerceAtMost(maximumStep)) {
+            val centerY = staff.last().y - step * spacing / 2.0
+            for (xOffset in -xSearchRadius..xSearchRadius) {
+                val centerX = candidate.x + xOffset
+                val score = noteHeadShapeScore(dark, width, height, centerX, centerY, staff, spacing)
+                if (score > bestScore) {
+                    bestScore = score
+                    bestX = centerX
+                    bestStep = step
+                }
+            }
+        }
+        if (bestScore < MIN_NOTEHEAD_SHAPE_SCORE) return null
+        return NoteHead(bestX, bestStep, candidate.score + bestScore)
+    }
+
+    /** Rejects text, ties and stem fragments by checking for an oval notehead contour. */
+    private fun noteHeadShapeScore(
+        dark: BooleanArray,
+        width: Int,
+        height: Int,
+        centerX: Double,
+        centerY: Double,
+        staff: List<StaffLine>,
+        spacing: Double,
+    ): Double {
+        val radiusX = spacing * 0.62
+        val radiusY = spacing * 0.37
+        val left = (centerX - radiusX).roundToInt().coerceAtLeast(0)
+        val right = (centerX + radiusX).roundToInt().coerceAtMost(width - 1)
+        val top = (centerY - radiusY).roundToInt().coerceAtLeast(0)
+        val bottom = (centerY + radiusY).roundToInt().coerceAtMost(height - 1)
+        var contourInk = 0
+        var contourSamples = 0
+        var supportedRows = 0
+        val quadrantInk = IntArray(4)
+        val quadrantSamples = IntArray(4)
+
+        for (y in top..bottom) {
+            if (isStaffLine(y.toDouble(), staff)) continue
+            var rowInk = 0
+            for (x in left..right) {
+                val dx = (x - centerX) / radiusX
+                val dy = (y - centerY) / radiusY
+                val ellipse = dx * dx + dy * dy
+                if (ellipse !in 0.48..1.18) continue
+                contourSamples++
+                val quadrant = when {
+                    abs(dx) > abs(dy) && dx < 0 -> 0
+                    abs(dx) > abs(dy) -> 1
+                    dy < 0 -> 2
+                    else -> 3
+                }
+                quadrantSamples[quadrant]++
+                if (dark[y * width + x]) {
+                    contourInk++
+                    rowInk++
+                    quadrantInk[quadrant]++
+                }
+            }
+            if (rowInk >= 2) supportedRows++
+        }
+
+        if (contourSamples == 0) return 0.0
+        val contourRatio = contourInk.toDouble() / contourSamples
+        val minimumQuadrantRatio = quadrantInk.indices.minOf { index ->
+            quadrantInk[index].toDouble() / quadrantSamples[index].coerceAtLeast(1)
+        }
+        val rowSupport = (supportedRows / MIN_NOTEHEAD_SUPPORTED_ROWS).coerceAtMost(1.0)
+        return contourRatio * 0.55 + minimumQuadrantRatio * 0.35 + rowSupport * 0.10
     }
 
     private fun findStaves(
@@ -594,7 +790,18 @@ object StaffNoteRecognizer {
         return merged.filter { (start, end) -> end - start + 1 in minWidth..maxWidth }
     }
 
-    private val STAFF_SCAN_ANGLES = floatArrayOf(0f, -1f, 1f, -2f, 2f, -3f, 3f)
+    private const val MAX_PROJECTION_SAMPLES = 350_000.0
+    private const val MIN_SKEW_SAMPLES = 200
+    private const val MAX_SKEW_DEGREES = 8
+    private const val SKEW_STEP_DEGREES = 0.25f
+    private const val SKEW_STEPS = 32
+    private const val MIN_DESKEW_ANGLE = 0.35f
+    private const val MIN_DESKEW_IMPROVEMENT = 1.015
+    private const val MIN_FALLBACK_ANGLE_DISTANCE = 0.75f
+    private const val MIN_FALLBACK_SCORE_RATIO = 0.96
+    private const val MAX_DESKEW_ATTEMPTS = 3
+    private const val MIN_NOTEHEAD_SHAPE_SCORE = 0.16
+    private const val MIN_NOTEHEAD_SUPPORTED_ROWS = 4.0
     private const val FIRST_SYSTEM_NOTE_START_SPACES = 7.0
     private const val NEXT_SYSTEM_NOTE_START_SPACES = 4.8
     private const val MAX_NOTES = 200
